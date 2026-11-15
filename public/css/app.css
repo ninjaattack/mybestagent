@@ -2771,3 +2771,28 @@ select[aria-expanded="true"] { border-color: var(--search) !important; }
   .print-sheet { padding: 0; }
   .p-card, .p-tag, .p-band { break-inside: avoid; }
 }
+
+/* Мастер, первый шаг: три большие кнопки «Люди / Животные / Вещи»; подвиды раскрываются только под выбранной.
+   На телефоне панель встаёт сразу под нажатой кнопкой (order), на широком экране — под всеми тремя во всю ширину. */
+.cat3 .pick { position: relative; color: var(--ink); }
+.cat3 .pick-t { flex: 1; min-width: 0; }
+.cat3 .pick-chev { flex: none; width: 20px; height: 20px; color: var(--muted); transition: transform .2s var(--ease); }
+.cat3 .pick.on .pick-chev { transform: rotate(90deg); color: var(--ink); }
+.cat3 .pick:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.tpl-panel { order: var(--o, 10); display: grid; gap: 12px; padding: 4px 0 8px; animation: tplIn .2s var(--ease); }
+.tpl-panel .ward-pick { margin-top: 0; }
+.tpl-panel-note { margin: 0; }
+@keyframes tplIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .tpl-panel { animation: none; } .cat3 .pick-chev { transition: none; } }
+@media (min-width: 640px) {
+  .tpl-panel { order: 10; grid-column: 1 / -1; padding-top: 6px; }
+  .cat3 .pick-chev { position: absolute; top: 18px; right: 18px; transform: rotate(90deg); }
+  .cat3 .pick.on .pick-chev { transform: rotate(-90deg); }
+}
+.cat3 { grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 640px) { .cat3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.cat3 > * { min-width: 0; }
+.cat3 .pick-t span { display: block; margin-top: 2px; line-height: 1.35; }
+.tpl-panel .ward-chip { max-width: 100%; min-width: 0; }
+.tpl-panel { grid-template-columns: minmax(0, 1fr); }
+.tpl-panel .ward-chip span { min-width: 0; }

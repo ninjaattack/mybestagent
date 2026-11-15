@@ -44,11 +44,9 @@ export function applyTemplate(d, code) {
   if (code === 'child' && !d.relation) d.relation = 'legal_rep';
 }
 export const tplName = (code) => { for (const list of Object.values(TPL)) for (const x of list) if (x[0] === code) return tr(x[2], x[3]); return ''; };
-// Сетка плиток на первом шаге мастера
-export const tplGrid = (d) => h`<div class="tpl-groups">${Object.entries(TPL).map(([cat, list]) => h`<section class="tpl-group">
-  <h3 class="tpl-h">${catName(cat)}${cat === 'people' ? h`<span class="xs muted">${tr('проверка модератором', 'moderator review')}</span>` : ''}</h3>
-  <div class="tpl-grid">${list.map(([code, ic, ru, en, sru, sen]) => h`<button type="button" class="tpl c-${cat} ${d.template === code ? 'on' : ''}" data-tpl="${code}" aria-pressed="${d.template === code ? 'true' : 'false'}">
-    <span class="tpl-ic">${icon(ic)}</span><span class="tpl-t"><b>${tr(ru, en)}</b><small>${tr(sru, sen)}</small></span></button>`)}</div></section>`)}</div>`;
+// Плитки подвидов одной категории — раскрываются под большой кнопкой на первом шаге мастера
+export const tplList = (d, cat) => h`<div class="tpl-grid">${TPL[cat].map(([code, ic, ru, en, sru, sen]) => h`<button type="button" class="tpl c-${cat} ${d.template === code ? 'on' : ''}" data-tpl="${code}" aria-pressed="${d.template === code ? 'true' : 'false'}">
+    <span class="tpl-ic">${icon(ic)}</span><span class="tpl-t"><b>${tr(ru, en)}</b><small>${tr(sru, sen)}</small></span></button>`)}</div>`;
 // Подсказка шаблона на шаге «Описание»
 export function tplHint(code, kind) {
   const lost = kind === 'lost';

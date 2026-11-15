@@ -591,6 +591,16 @@ describe('Мастер заявки', () => {
     await login(page, 'anna@example.com');
     await open(page, '#/new/lost');
     assert.equal(await page.locator('.tabbar').isVisible(), false, 'нижняя панель скрыта');
+    // сначала только три большие кнопки, подвиды раскрываются под выбранной
+    assert.equal(await page.locator('[data-cat]').count(), 3, 'три кнопки: люди, животные, вещи');
+    assert.equal(await page.locator('[data-tpl]').count(), 0, 'подвидов до выбора нет');
+    await page.locator('[data-cat=animals]').click();
+    assert.equal(await page.locator('[data-tpl]').count(), 3, 'у животных три подвида');
+    const pb = await page.locator('[data-cat=animals]').boundingBox(), tb = await page.locator('[data-tpl=dog]').boundingBox();
+    const things = await page.locator('[data-cat=things]').boundingBox();
+    assert.ok(tb.y > pb.y && tb.y < things.y, 'на телефоне подвиды раскрываются сразу под нажатой кнопкой');
+    await page.locator('[data-cat=people]').click();
+    assert.equal(await page.locator('[data-tpl=dog]').count(), 0, 'открыт только один раздел');
     await page.locator('[data-tpl=adult]').click();
     await page.waitForSelector('select[name=relation]');
     const next = await page.locator('#next').boundingBox();
@@ -605,6 +615,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/found');
+    await page.locator('[data-cat=animals]').click();
     await page.locator('[data-tpl="cat"]').click();
     await page.locator('input[name="title"]').fill('Найден серый кот в ошейнике');
     await page.locator('textarea[name="features"]').fill('серый, голубой ошейник');
@@ -625,6 +636,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/lost');
+    await page.locator('[data-cat=animals]').click();
     await page.locator('[data-tpl="dog"]').click();
     await page.locator('select[name="species"]').selectOption('Собака');
     assert.ok(await page.locator('#breedList option[value="Такса"]').count(), 'подсказки пород для собак');
@@ -659,6 +671,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/found');
+    await page.locator('[data-cat=things]').click();
     await page.locator('[data-tpl="accessories"]').click();
     await page.locator('input[name="title"]').fill('Найден синий зонт');
     assert.ok(await page.locator('input[name="thing_type"][value="accessories"]').isChecked(), 'шаблон сразу выбирает тип вещи');
@@ -703,6 +716,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'max@example.com');
     await open(page, '#/new/lost');
+    await page.locator('[data-cat=people]').click();
     await page.locator('[data-tpl="adult"]').click();
     await page.locator('#next').click();
     // ошибка показывается у поля: рамка, текст под полем, фокус в поле
@@ -721,6 +735,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'max@example.com');
     await open(page, '#/new/lost');
+    await page.locator('[data-cat=people]').click();
     await page.locator('[data-tpl="elderly"]').click();
     assert.match(await page.locator('.wizard').innerText(), /Шаг 2 \/ 6/, 'у заявки о человеке отдельный шаг «Приметы»');
     assert.equal(await page.locator('[name=last_seen]').count(), 0, 'место — на шаге «Место», а не строкой в описании');

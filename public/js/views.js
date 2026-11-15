@@ -8,7 +8,7 @@ import {
 } from './core.js';
 import { BREEDS, COLORS, parksOf } from './places.js';
 import { pushCard, installCard, meNudge } from './push.js';
-import { tplGrid, applyTemplate, tplHint, tplName, idsBox, idFieldsFor, idName, countryCard, countrySelect, countryOf, countryName, photoMeta, matchSection, bindMatches, meWards, verifyBar, bindVerify } from './smart.js';
+import { tplList, applyTemplate, tplHint, tplName, idsBox, idFieldsFor, idName, countryCard, countrySelect, countryOf, countryName, photoMeta, matchSection, bindMatches, meWards, verifyBar, bindVerify } from './smart.js';
 
 /* =================== общие компоненты =================== */
 // Псевдоним собеседника в анонимном чате (сервер отдаёт по-русски, здесь — перевод).
@@ -718,6 +718,22 @@ async function wizard(view, kind, existing) {
   const stepsFor = () => d.category === 'people' ? ['cat', 'details', 'looks', 'photos', 'place', 'final'] : ['cat', 'details', 'photos', 'place', 'final'];
   let steps = stepsFor();
   let step = edit ? 1 : (d.category ? 1 : 0);
+  let openCat = d.category || '';
+  // Первый шаг: три большие кнопки «Люди / Животные / Вещи», подвиды раскрываются только под выбранной
+  const CAT_SUB = { people: ['Пожилой, ребёнок, взрослый', 'Elderly, child, adult'], animals: ['Собака, кошка, другое животное', 'Dog, cat, other animal'], things: ['Документы, телефон, ключи и другое', 'Documents, phone, keys and more'] };
+  const catPick = (c, i) => h`<button type="button" class="pick ${openCat === c ? 'on' : ''}" data-cat="${c}" aria-expanded="${openCat === c ? 'true' : 'false'}" aria-controls="tplPanel" style="order:${i * 2}">
+    <div class="cat-ic" style="background:${c === 'people' ? 'linear-gradient(145deg,var(--red),var(--red-2))' : c === 'animals' ? 'linear-gradient(145deg,var(--blue),var(--blue-2))' : 'linear-gradient(145deg,#2a2c33,#0e0f13)'}">${icon(CAT[c].icon)}</div>
+    <div class="pick-t"><b>${catName(c)}</b><span>${tr(...CAT_SUB[c])}</span></div>${icon('chevR', 'pick-chev')}</button>`;
+  const catPanel = () => {
+    if (!openCat) return '';
+    const i = ['people', 'animals', 'things'].indexOf(openCat);
+    const my = wards.filter((w) => (openCat === 'people' ? w.kind !== 'pet' : openCat === 'animals' ? w.kind === 'pet' : false));
+    return h`<div class="tpl-panel" id="tplPanel" style="--o:${i * 2 + 1}">
+      ${openCat === 'people' ? h`<p class="xs muted tpl-panel-note">${tr('Заявки о людях проверяет модератор перед публикацией.', 'Reports about people are reviewed by a moderator before publishing.')}</p>` : ''}
+      ${my.length ? h`<div class="ward-pick"><p class="small"><b>${tr('Пропал кто-то из «Моих близких»?', 'Is one of your loved ones missing?')}</b> ${tr('Заявка заполнится из карточки.', 'The report is filled from the card.')}</p>
+        <div class="row-wrap">${my.map((w) => h`<button type="button" class="ward-chip" data-ward="${w.id}">${w.photos && w.photos[0] ? h`<img src="${w.photos[0]}" alt="">` : icon(w.kind === 'pet' ? 'paw' : 'user')}<span>${w.name}</span></button>`)}</div></div>` : ''}
+      ${tplList(d, openCat)}</div>`;
+  };
   // Черновик: введённое хранится в sessionStorage — «Назад» в браузере, обновление страницы, «Отмена» или истёкшая
   // сессия не стирают заявку (после входа мастер откроется с теми же данными). После публикации черновик удаляется.
   const draftKey = edit ? 'mba.wiz.edit.' + d.id : 'mba.wiz.' + kind;
@@ -765,7 +781,7 @@ async function wizard(view, kind, existing) {
       box.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
       return false;
     };
-    if (s === 'cat' && !d.category) return err(tr('Выберите категорию', 'Choose a category'));
+    if (s === 'cat' && !d.category) return err(openCat ? tr('Выберите, что именно: нажмите на подходящий вариант', 'Choose what exactly: tap the closest option') : tr('Выберите: человек, животное или вещь', 'Choose: person, animal or item'));
     if (s === 'details') {
       if (d.category === 'people' && isLost) {
         if (!d.person_name) return err(t('wiz.e_fio', 'Укажите ФИО', 'Enter full name'), 'person_name');
@@ -859,10 +875,7 @@ async function wizard(view, kind, existing) {
     const pct = Math.round(((step + 1) / steps.length) * 100);
     let body;
     if (s === 'cat') body = h`<h2>${isLost ? t('wiz.q_lost', 'Кого или что вы потеряли?', 'What did you lose?') : t('wiz.q_found', 'Кого или что вы нашли?', 'What did you find?')}</h2>
-      <p class="muted" style="margin-top:8px">${tr('Выберите, что подходит лучше: покажем только нужные поля и подскажем, что важно указать.', 'Pick the closest match: we show only the fields you need and tips on what matters.')}</p>
-      ${wards.length ? h`<div class="ward-pick"><p class="small"><b>${tr('Пропал кто-то из «Моих близких»?', 'Is one of your loved ones missing?')}</b> ${tr('Заявка заполнится из карточки.', 'The report is filled from the card.')}</p>
-        <div class="row-wrap">${wards.map((w) => h`<button type="button" class="ward-chip" data-ward="${w.id}">${w.photos && w.photos[0] ? h`<img src="${w.photos[0]}" alt="">` : icon(w.kind === 'pet' ? 'paw' : 'user')}<span>${w.name}</span></button>`)}</div></div>` : ''}
-      <div style="margin-top:18px">${tplGrid(d)}</div>`;
+      <div class="pick-grid cat3" style="margin-top:18px">${['people', 'animals', 'things'].map(catPick)}${catPanel()}</div>`;
     if (s === 'details') {
       const c = d.category;
       const hint = d.template ? tplHint(d.template, kind) : '';
@@ -991,6 +1004,11 @@ async function wizard(view, kind, existing) {
         <button class="btn ${s === 'final' ? 'btn-red' : ''}" id="next">${s === 'final' ? (edit ? t('wiz.save', 'Сохранить изменения', 'Save changes') : t('wiz.publish', 'Опубликовать', 'Publish')) : s === 'photos' && !getPhotos().length ? tr('Пропустить', 'Skip') : tr('Далее', 'Next')}${s === 'final' ? '' : icon('chevR')}</button>
       </div></div>`);
     if (s === 'cat') {
+      $$('[data-cat]', view).forEach((b) => b.onclick = () => {
+        openCat = openCat === b.dataset.cat ? '' : b.dataset.cat; draw();
+        const p = $('#tplPanel', view); if (p) { const r = p.getBoundingClientRect(); if (r.bottom > innerHeight - 90) p.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' }); }
+        const nb = $(`[data-cat="${openCat}"]`, view); if (nb) nb.focus({ preventScroll: true });
+      });
       $$('[data-tpl]', view).forEach((b) => b.onclick = () => { applyTemplate(d, b.dataset.tpl); steps = stepsFor(); step = 1; draw(); });
       $$('[data-ward]', view).forEach((b) => b.onclick = () => { fromWard(d, wards.find((x) => x.id === +b.dataset.ward)); steps = stepsFor(); step = 1; draw(); });
     }
