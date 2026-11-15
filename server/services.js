@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 const { all, get, run, DATA_DIR } = require('./db');
 const { toEn } = require('./i18n');
 const MAIL = require('./mail');
+const M = require('./match');
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 
@@ -86,7 +87,7 @@ function sendSms(to, body, secret) {
 /* ---------- Push (без персональных данных) ---------- */
 // Группы, которые пользователь включает и выключает в настройках (для всех своих устройств).
 const PUSH_KEYS = ['match', 'chat', 'support', 'emergency', 'moderation', 'account'];
-const PUSH_GROUP = { match: 'match', registry: 'match', chat: 'chat', support: 'support', emergency: 'emergency',
+const PUSH_GROUP = { match: 'match', registry: 'match', ward: 'emergency', chat: 'chat', support: 'support', emergency: 'emergency',
   moderation: 'moderation', status: 'moderation', role: 'moderation', payment: 'account', points: 'account', family: 'account' };
 function pushPrefs(u) {
   let p = {}; try { p = JSON.parse((u && u.push_prefs) || '{}') || {}; } catch (e) { p = {}; }
@@ -150,90 +151,84 @@ function notify(userId, { type, title, body = '', link = '', pushTitle, pushBody
 }
 
 /* ---------- Гео ---------- */
-function distKm(aLat, aLng, bLat, bLng) {
-  if ([aLat, aLng, bLat, bLng].some((v) => v == null || isNaN(v))) return null;
-  const R = 6371, toR = Math.PI / 180;
-  const dLat = (bLat - aLat) * toR, dLng = (bLng - aLng) * toR;
-  const x = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * toR) * Math.cos(bLat * toR) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(x));
-}
+const { distKm } = M;
 
-/* ---------- Подбор совпадений «потерял» ↔ «нашёл» ---------- */
-const STOP = new Set(('и в во на с со по за из у от до для при не нет без это как что или его её их был была было около очень ' +
-  'найден найдена найдено найдены нашел нашла потерян потеряна потеряно потерялся потерялась пропал пропала пропали улетел убежал ' +
-  'возле рядом сейчас домой дома меня мой моя мое мои лет года год').split(' '));
-// Простой стеммер: отсекаем типичные русские окончания, чтобы «рыжий/рыжего», «кот/кота» совпадали.
-const END = /(иями|ями|ами|ого|его|ому|ему|ыми|ими|ая|яя|ое|ее|ые|ие|ий|ый|ой|ам|ям|ах|ях|ов|ев|ей|ом|ем|ью|ия|а|я|ы|и|о|е|у|ю|ь)$/;
-function stem(w) { if (/^[0-9]+$/.test(w) || w.length <= 3) return w; const r = w.replace(END, ''); return r.length >= 3 ? r : w; }
-function words(s) {
-  return new Set(String(s || '').toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9]+/g)?.filter((w) => w.length > 2 && !STOP.has(w)).map(stem) || []);
+/* ---------- Подбор совпадений «потерял» ↔ «нашёл» (правила — server/match.js) ---------- */
+const { matchInfo, matchScore } = M;
+// «Расширенный поиск»: подписчик видит и «возможные» совпадения (35–49 %), в том числе дальше обычного радиуса.
+// Для заявок о людях «возможные» видны всем бесплатно — поиск человека не продаём.
+const hasPlus = (uid) => !!get("SELECT 1 FROM subscriptions s JOIN tariffs t ON t.id = s.tariff_id WHERE s.user_id = ? AND t.feature = 'search_plus' AND s.until > datetime('now')", uid);
+const seesWeak = (app) => app.category === 'people' || hasPlus(app.user_id);
+// Короткое объяснение для уведомления: самая сильная причина совпадения
+function topReason(reasons) {
+  const r = reasons.find((x) => ['id', 'secret', 'same_photo', 'breed', 'clothes', 'brand', 'color'].includes(x.k));
+  if (!r) return '';
+  const ID = { chip: 'Совпал номер чипа.', tattoo: 'Совпало клеймо.', serial: 'Совпал серийный номер.', doc_name: 'Совпали ФИО в документе.', plate: 'Совпал госномер.' };
+  return { id: ID[r.v] || 'Совпал номер.', secret: 'Совпала скрытая примета.', same_photo: 'Совпадает фото.', breed: 'Совпала порода.', clothes: 'Совпала одежда.', brand: 'Совпал бренд.', color: 'Совпал цвет.' }[r.k];
 }
-// Вид животного: собака ≠ кошка — такие пары не совпадают, даже если рядом и в один день.
-const SPECIES = [['dog', /соба|пес|пёс|щен|шпиц|лабрад|овчар|терьер|хаски|такс|dog|puppy/], ['cat', /кот|кош|котен|котён|cat|kitten/],
-  ['bird', /птиц|попуг|корелл|голуб|bird|parrot/], ['rodent', /хомя|крыс|морск.*свин|шинш|rodent|hamster/]];
-function speciesOf(a) { const txt = [a.species, a.title].join(' ').toLowerCase(); const m = SPECIES.find(([, re]) => re.test(txt)); return m ? m[0] : null; }
-const detailsOf = (a) => { try { return JSON.parse(a.details || '{}'); } catch (e) { return {}; } };
-// Одежда, обувь и ориентир, а у животных — порода, окрас, одежда и парк — тоже приметы для сравнения
-const detailWords = (d) => [d.clothes_top, d.clothes_bottom, d.headwear, d.shoes, d.landmark, d.breed, d.color, d.clothes, d.park].filter(Boolean).join(' ');
-// Уточнения вещи (размер, цвет, марка, госномер…) — приметы; тип вещи сравнивается отдельно и приметой не считается
-const THING_KEYS = ['size', 'color', 'brand', 'model', 'material', 'metal', 'stones', 'engraving', 'plate', 'landmark'];
-const matchText = (a, d) => (a.category === 'things' && d.thing_type
-  ? [a.title, a.features, a.description, ...THING_KEYS.map((k) => d[k])]
-  : [a.title, a.features, a.description, a.species, detailWords(d)]).filter(Boolean).join(' ');
-function matchScore(a, b) {
-  if (a.category !== b.category || a.kind === b.kind) return 0;
-  if (a.category === 'animals') { const sa = speciesOf(a), sb = speciesOf(b); if (sa && sb && sa !== sb) return 0; }
-  const da = detailsOf(a), db = detailsOf(b);
-  // одежда ≠ авто: разные типы вещей не совпадают («Другое» сравнивается с любым типом)
-  if (a.category === 'things' && da.thing_type && db.thing_type && da.thing_type !== db.thing_type && da.thing_type !== 'other' && db.thing_type !== 'other') return 0;
-  if (a.category === 'people') {
-    // разный пол или заметно разный возраст (у найденного возраст примерный) — не тот человек
-    if (da.sex && db.sex && da.sex !== db.sex) return 0;
-    if (a.person_age != null && b.person_age != null && Math.abs(a.person_age - b.person_age) > 15) return 0;
-  }
-  const wa = words(matchText(a, da));
-  const wb = words(matchText(b, db));
-  const generic = /^(соба|пес|кот|кош|птиц|живот|вещ|предм|человек|мужчин|женщин|dog|cat)/; // слова-виды не считаются приметой
-  let hit = 0; for (const w of wa) if (wb.has(w) && !generic.test(w)) hit++;
-  if (!hit) return 0; // без общих примет совпадением не считаем — только место и дата недостаточно
-  let s = Math.min(45, hit * 9);
-  const d = distKm(a.lat, a.lng, b.lat, b.lng);
-  if (d != null && d > 60) return 0; // разные города — не совпадение, даже если приметы похожи
-  if (d != null) s += d <= 1 ? 35 : d <= 3 ? 28 : d <= 10 ? 18 : d <= 30 ? 8 : 0;
-  else if (a.city && b.city && a.city.toLowerCase() === b.city.toLowerCase()) s += 12;
-  if (a.event_date && b.event_date) {
-    const days = Math.abs(new Date(a.event_date) - new Date(b.event_date)) / 864e5;
-    const lost = a.kind === 'lost' ? a : b, found = a.kind === 'lost' ? b : a;
-    const order = new Date(found.event_date) >= new Date(lost.event_date) - 864e5; // находка не раньше пропажи
-    if (order) s += days <= 2 ? 20 : days <= 7 ? 12 : days <= 30 ? 5 : 0;
-  }
-  return Math.min(100, s);
+function notifyMatch(mine, theirs, score, reasons) {
+  const why = topReason(reasons);
+  notify(mine.user_id, {
+    type: 'match',
+    title: `Возможное совпадение ${score}%`,
+    body: `По вашей заявке «${mine.title}» найдена похожая: «${theirs.title}».` + (why ? ' ' + why : ''),
+    link: `#/a/${theirs.id}`,
+    pushTitle: 'Возможное совпадение', pushBody: 'По вашей заявке найдено похожее объявление'
+  });
 }
-const MATCH_MIN = 50;
-
+// Сверяет заявку со всеми опубликованными заявками другой стороны той же категории.
+// Новые пары записываются и уведомляются; у существующих обновляются оценка и причины (без повторных уведомлений).
+// notified: 0 — не уведомляли, 1 — уведомили как «возможное», 2 — как совпадение.
 function runMatching(app) {
-  if (app.status !== 'published') return [];
+  if (!app || app.status !== 'published') return [];
   const other = app.kind === 'lost' ? 'found' : 'lost';
   const cands = all("SELECT * FROM applications WHERE status = 'published' AND kind = ? AND category = ? AND user_id != ?", other, app.category, app.user_id);
   const created = [];
   for (const c of cands) {
-    const score = matchScore(app, c);
-    if (score < MATCH_MIN) continue;
+    if (app.family_id && c.family_id === app.family_id) continue; // заявки одной семьи между собой не сравниваем
+    const { score, reasons } = matchInfo(app, c);
     const lost = app.kind === 'lost' ? app : c, found = app.kind === 'lost' ? c : app;
-    const r = run('INSERT OR IGNORE INTO matches (lost_id, found_id, score) VALUES (?,?,?)', lost.id, found.id, score);
-    if (!r.changes) continue;
-    created.push({ lost, found, score });
-    for (const [mine, theirs] of [[lost, found], [found, lost]]) {
-      notify(mine.user_id, {
-        type: 'match',
-        title: `Возможное совпадение ${score}%`,
-        body: `По вашей заявке «${mine.title}» найдена похожая: «${theirs.title}».`,
-        link: `#/a/${theirs.id}`,
-        pushTitle: 'Возможное совпадение', pushBody: 'По вашей заявке найдено похожее объявление'
-      });
+    const ex = get('SELECT * FROM matches WHERE lost_id = ? AND found_id = ?', lost.id, found.id);
+    if (score < M.WEAK) {
+      if (ex && ex.lost_vote !== 'yes' && ex.found_vote !== 'yes') run('DELETE FROM matches WHERE id = ?', ex.id);
+      continue;
+    }
+    const level = score >= M.STRONG ? 2 : 1;
+    let id, was = 0;
+    if (ex) { id = ex.id; was = ex.notified; run("UPDATE matches SET score = ?, reasons = ?, updated_at = datetime('now') WHERE id = ?", score, JSON.stringify(reasons), id); } else {
+      id = run('INSERT INTO matches (lost_id, found_id, score, reasons) VALUES (?,?,?,?)', lost.id, found.id, score, JSON.stringify(reasons)).lastInsertRowid;
+    }
+    if (ex && (ex.lost_vote === 'no' || ex.found_vote === 'no')) continue; // пару уже отклонили — не беспокоим
+    if (level > was) {
+      run('UPDATE matches SET notified = ? WHERE id = ?', level, id);
+      if (level === 2) created.push({ lost, found, score });
+      for (const [mine, theirs] of [[lost, found], [found, lost]]) if (level === 2 || seesWeak(mine)) notifyMatch(mine, theirs, score, reasons);
     }
   }
+  if (app.category === 'things') registryCheck(app);
   return created;
+}
+// Найденная вещь с номером или гравировкой сверяется с реестром ценностей: владельцу украденного/потерянного
+// предмета приходит уведомление со ссылкой на заявку (один раз на пару)
+function registryCheck(app) {
+  if (app.kind !== 'found') return;
+  let d = {}, ids = {}; try { d = JSON.parse(app.details || '{}'); ids = JSON.parse(app.ids || '{}'); } catch (e) { return; }
+  const keys = [ids.serial, d.plate, d.engraving].filter(Boolean).map(M.normId).filter((x) => x.length >= 4);
+  if (!keys.length) return;
+  for (const v of all("SELECT * FROM valuables WHERE status IN ('stolen','lost') AND user_id != ?", app.user_id)) {
+    const serials = String(v.serials || '').split(/[,;\n]/).map(M.normId).filter((x) => x.length >= 4);
+    const marks = M.normId(v.marks || '');
+    const hit = keys.some((k) => serials.some((s) => s === k || (k.length >= 6 && s.endsWith(k)) || (s.length >= 6 && k.endsWith(s))) || (k.length >= 5 && marks.includes(k)));
+    if (!hit || get('SELECT 1 FROM registry_hits WHERE valuable_id = ? AND application_id = ?', v.id, app.id)) continue;
+    run('INSERT INTO registry_hits (valuable_id, application_id) VALUES (?,?)', v.id, app.id);
+    notify(v.user_id, { type: 'registry', title: 'Ваш предмет из реестра, возможно, нашли', body: `«${v.title}» похож на находку «${app.title}».`, link: `#/a/${app.id}`, pushTitle: 'Предмет из реестра нашли', pushBody: 'Откройте платформу, чтобы узнать подробности' });
+  }
+}
+// Раз в 6 часов: допустимое расстояние растёт со временем, поэтому старые пропажи сверяются заново
+function rematchAll() {
+  for (const a of all("SELECT * FROM applications WHERE status = 'published' AND kind = 'lost' AND created_at > datetime('now','-120 days')")) {
+    try { runMatching(a); } catch (e) { console.error('Подбор совпадений:', e.message); }
+  }
 }
 
 /* ---------- Экстренное оповещение по зонам ---------- */
@@ -275,5 +270,5 @@ function addPoints(userId, delta, reason) {
 
 module.exports = {
   vapidPublic: vapid.publicKey, addStream, dropStreams, emit, notify, sendEmail, sendSms, sendPush, pushPrefs, PUSH_KEYS, channels, MAIL,
-  distKm, matchScore, runMatching, broadcastEmergency, LEVELS, levelOf, addPoints, BASE_URL
+  distKm, matchScore, matchInfo, runMatching, rematchAll, hasPlus, broadcastEmergency, LEVELS, levelOf, addPoints, BASE_URL
 };

@@ -2,6 +2,22 @@
 // Тексты ошибок API на английском: сервер пишет их по-русски, а для английского интерфейса (заголовок X-Lang: en)
 // обработчик ошибок подменяет текст по этому словарю. Новую ошибку — добавить сюда же (тест проверяет, что перевод есть у всех).
 const EN = {
+  'Выберите страну из списка': 'Choose a country from the list',
+  'Совпадение не найдено': 'Match not found',
+  'Ответ: «это оно» или «не то»': 'Answer “this is it” or “not it”',
+  'Проверку проходит собеседник автора заявки': 'Only the person chatting with the report author can take the check',
+  'Автор заявки не указал скрытую примету': 'The report author has not set a hidden detail',
+  'Проверка уже пройдена': 'The check has already been passed',
+  'Попытки закончились. Договоритесь с автором заявки в чате': 'No attempts left. Please agree with the report author in the chat',
+  'Напишите примету': 'Describe the detail',
+  'Карточка не найдена': 'Card not found',
+  'Тип карточки': 'Card type',
+  'Укажите имя': 'Enter a name',
+  'Год рождения — от 1900 до текущего': 'Year of birth must be between 1900 and the current year',
+  'Не более 10 карточек близких': 'You can add up to 10 cards',
+  'Подтвердите, что вы родственник или законный представитель и даёте согласие на обработку данных': 'Confirm that you are a relative or legal representative and consent to data processing',
+  'Карточка не найдена или отключена': 'The card was not found or is turned off',
+  'Напишите, где вы и что случилось, или отправьте место': 'Write where you are and what happened, or send your location',
   'Аккаунт заблокирован. Обратитесь в поддержку.': 'Your account is blocked. Please contact support.',
   'В семье не более 10 человек': 'A family account can have up to 10 members',
   'Введите минимум 3 символа: серийный номер, гравировку или название': 'Enter at least 3 characters: serial number, engraving or name',

@@ -89,7 +89,7 @@ describe('Рабочий режим: чистая база и честные о�
   it('нет демо-пользователей и демо-заявок; тарифы и справочники на месте; администратор из ADMIN_EMAIL', async () => {
     const c = client(S1.base);
     assert.equal((await c.get('/api/applications?status=all')).body.items.length, 0, 'на рабочем сайте нет демо-заявок');
-    assert.equal((await c.get('/api/tariffs')).body.items.length, 3);
+    assert.equal((await c.get('/api/tariffs')).body.items.length, 4);
     const cfg = (await c.get('/api/config')).body;
     assert.equal(cfg.dev, false);
     assert.deepEqual(cfg.login, { email: false, phone: true }, 'подключены только SMS — вход по телефону');

@@ -6,7 +6,7 @@ const path = require('path');
 const PDFDocument = require('pdfkit');
 const { all } = require('./db');
 
-const EDITION = '2026-11-09'; // дата редакции документов
+const EDITION = '2026-11-15'; // дата редакции документов
 const DOC_IDS = ['terms', 'privacy', 'consent', 'publication'];
 
 /* ---------- реквизиты оператора ---------- */
@@ -139,6 +139,8 @@ const RU = {
         'Данные заявок: описание, приметы, фотографии, место и дата события, контакт для связи. В заявках категории «Люди» — ФИО, возраст, приметы и фотографии разыскиваемого человека, а также степень родства заявителя.',
         'Переписка в анонимном чате, обращения в поддержку, жалобы и запросы об удалении.',
         'Реестр ценностей: описания, фото, серийные номера и приметы зарегистрированных вещей.',
+        'Карточки «Мои близкие»: имя, год рождения, пол, фото, приметы, особенности здоровья, привычные места, номер чипа или клейма питомца, контакт для связи, а также сообщения нашедших, отправленные со страницы QR-кода (текст, телефон нашедшего, место на карте, IP-адрес).',
+        'Скрытые поля заявки: номер чипа или клейма, IMEI или серийный номер, ФИО в документе, скрытая примета. Они не публикуются и используются только для автоматической сверки совпадений и проверки собеседника в чате.',
         'Платежи: тариф, сумма, способ оплаты, данные кассового чека, маска номера и токен карты при её привязке. Полные реквизиты карты обрабатывает платёжный провайдер, Оператор их не получает.',
         'Технические данные: IP-адрес, сведения о браузере и устройстве, идентификатор сессии, подписка на push-уведомления, журнал действий в учётной записи.'
       ]],
@@ -151,10 +153,13 @@ const RU = {
         'Ответы на запросы уполномоченных органов — исполнение требований закона.'
       ]],
       ['Сведения о здоровье и специальные категории данных', [
+        'В карточке «Мои близкие» сведения о здоровье человека (например, деменция или нарушение слуха) указывает его родственник или законный представитель, подтверждая при создании карточки своё право и согласие на обработку этих данных. Основания — согласие субъекта или его законного представителя, а если получить согласие невозможно — защита жизни и здоровья человека (ст. 10 152-ФЗ). Эти сведения видят только автор карточки и члены его семейного аккаунта; в заявку они попадают, только когда автор сам подаёт заявку о пропаже.',
         'В заявке о пропавшем или найденном человеке автор может по желанию указать особенности здоровья (нарушения слуха или зрения, деменцию, контузию, инвалидность), язык общения и национальность — только в объёме, нужном, чтобы узнать человека и оказать ему помощь. Основание — защита жизни и здоровья человека, когда получить его согласие невозможно (п. 3 ч. 2 ст. 10 152-ФЗ). После отметки «найден» эти сведения скрываются вместе с остальными личными данными.',
         'Оператор не собирает сведения о религиозных и политических взглядах. Подробные диагнозы и медицинские документы в заявках не публикуются: если они попали в заявку, модератор удаляет их или отклоняет заявку.'
       ]],
       ['Что видят другие пользователи', [
+        'Страницу QR-кода близкого видит любой, кто его отсканировал: имя, текст для нашедшего и — только если автор карточки это разрешил — фото и контакт. Диагнозы, адрес и год рождения на этой странице не показываются. Сообщения нашедших видят только автор карточки и члены его семьи.',
+        'Номера (чип, IMEI, серийный номер, ФИО в документе) и скрытая примета видны только автору заявки и модераторам; другим пользователям сообщается лишь о совпадении.',
         'Публично доступны опубликованные заявки (без контакта автора), их фотографии и примерное место на карте.',
         'Контакт для связи из заявки видят только модераторы. Пользователи общаются через анонимный чат без раскрытия телефона и e-mail.',
         'В рейтинге волонтёров показываются имя и первая буква фамилии (или название организации-партнёра), город, фото профиля, баллы и статус.',
@@ -167,6 +172,7 @@ const RU = {
         '— заявки и переписка по ним — до удаления заявки или учётной записи;',
         '— одноразовые коды входа — 10 минут, сессии входа — до выхода из учётной записи, но не более 30 дней;',
         '— журнал действий и технические данные — не более 1 года;',
+        '— карточки «Мои близкие» — до их удаления автором или удаления учётной записи; сообщения нашедших по QR-коду — не более 1 года;',
         '— сведения о платежах и кассовых чеках — 5 лет (ст. 29 402-ФЗ);',
         '— резервные копии — 14 дней, после чего перезаписываются.',
         'По истечении сроков или при достижении целей обработки данные удаляются или обезличиваются.'
@@ -365,6 +371,8 @@ const EN = {
         'Report data: description, features, photos, place and date, contact. People reports also contain the missing person\'s name, age, features and photos, and the filer\'s relationship.',
         'Anonymous chat messages, support requests, complaints and removal requests.',
         'Valuables registry: descriptions, photos, serial numbers and marks.',
+        '"My loved ones" cards: name, year of birth, sex, photos, features, health notes, usual places, a pet\'s chip or tattoo number, a contact, and messages sent by finders from the QR page (text, finder\'s phone, map location, IP address).',
+        'Hidden report fields: chip or tattoo number, IMEI or serial number, the name on a document, a hidden detail. They are never published and are used only for automatic matching and for verifying the other person in the chat.',
         'Payments: plan, amount, method, receipt data, masked card number and card token if saved. Full card details are processed by the payment provider; the Operator never receives them.',
         'Technical data: IP address, browser and device information, session ID, push subscription, account activity log.'
       ]],
@@ -377,10 +385,13 @@ const EN = {
         'Responding to lawful requests from authorities — legal obligation.'
       ]],
       ['Health data and special categories', [
+        'In a "My loved ones" card, health details (e.g. dementia or hearing loss) are entered by a relative or legal representative who confirms their right and consent when creating the card. Legal basis: consent of the person or their legal representative, or, where consent cannot be obtained, protecting the person\'s life and health (Art. 10 of 152-FZ). Only the card author and their family account see these details; they enter a report only when the author files a missing report.',
         'In a report about a missing or found person, the author may optionally state health features (hearing or vision impairment, dementia, concussion, disability), language and nationality — only as far as needed to recognise and help the person. Legal basis: protecting the person\'s life and health when their consent cannot be obtained (Art. 10(2)(3) of 152-FZ). Once the person is found, this is hidden together with other personal data.',
         'The Operator does not collect religious or political data. Detailed diagnoses and medical records are not published: if they appear in a report, a moderator removes them or rejects the report.'
       ]],
       ['What other users see', [
+        'Anyone who scans a loved one\'s QR code sees the name, the message to the finder and — only if the card author allowed it — a photo and contact. Diagnoses, address and year of birth are never shown there. Finders\' messages are visible only to the card author and their family.',
+        'Numbers (chip, IMEI, serial, document name) and the hidden detail are visible only to the report author and moderators; other users are only told that there is a match.',
         'Published reports (without the author\'s contact), their photos and approximate map location are public.',
         'The contact in a report is visible only to moderators. Users talk via the anonymous chat without revealing phone or e-mail.',
         'The volunteer rating shows first name and surname initial (or partner organisation name), city, profile photo, points and status.',
@@ -393,6 +404,7 @@ const EN = {
         '— reports and their chats — until the report or account is deleted;',
         '— one-time sign-in codes — 10 minutes; sign-in sessions — until sign-out, at most 30 days;',
         '— activity log and technical data — up to 1 year;',
+        '— "My loved ones" cards — until deleted by the author or with the account; finders\' QR messages — up to 1 year;',
         '— payment and receipt records — 5 years (Art. 29 of 402-FZ);',
         '— backups — 14 days, then overwritten.',
         'When the period expires or the purpose is achieved, data is deleted or anonymised.'

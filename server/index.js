@@ -229,6 +229,9 @@ app.post('/api/auth/logout', h((req, res) => {
 
 /* ---------- конфигурация и словари ---------- */
 const GEO = require('./geo');
+const COUNTRIES = require('./countries');
+const WARDS = require('./wards');
+const M = require('./match');
 /* ---------- рекламная строка на главной: только активные объявления, ссылка с токеном erid (если задан) ---------- */
 const adUrl = (v) => { try { const u = new URL(String(v || '').trim()); return /^https?:$/.test(u.protocol) && u.hostname.includes('.') ? u.href : ''; } catch (e) { return ''; } };
 function publicAds() {
@@ -244,7 +247,8 @@ app.get('/api/config', h((req, res) => {
   if (PUBLIC_DEMO) res.set('Cache-Control', 'private, no-store');
   // какими способами сейчас можно войти: в рабочем режиме — только через подключённого провайдера
   const login = { email: DEV || !!S.channels.email, phone: DEV || !!S.channels.sms };
-  res.json({ ...demo, login, vapidPublic: S.vapidPublic, dev: DEV, payments: PAY, levels: S.LEVELS, dicts, ads: publicAds(), map: { provider: 'osm', center: [55.7558, 37.6173], zoom: 11, geocoder: GEO.enabled } });
+  res.json({ ...demo, login, vapidPublic: S.vapidPublic, dev: DEV, payments: PAY, levels: S.LEVELS, dicts, ads: publicAds(), map: { provider: 'osm', center: [55.7558, 37.6173], zoom: 11, geocoder: GEO.enabled },
+    countries: COUNTRIES.COUNTRIES, mfa: COUNTRIES.MFA, things: Object.fromEntries(Object.entries(THINGS.THING_TYPES).map(([k, v]) => [k, { ru: v.ru, en: v.en, fields: v.fields }])) });
 }));
 app.get('/api/i18n/:lang', h((req, res) => {
   const out = {}; for (const r of all('SELECT key, value FROM translations WHERE lang = ?', req.params.lang)) out[r.key] = r.value;
@@ -346,8 +350,10 @@ app.get('/api/me/export', needAuth, h((req, res) => {
     exported_at: new Date().toISOString(),
     profile: { name: u.name, email: u.email, phone: u.phone, birthdate: u.birthdate, city: u.city, role: u.role, lang: u.lang, points: u.points, registered_at: u.created_at, consent_at: u.consent_at,
       alert_zone: u.zone_enabled ? { lat: u.zone_lat, lng: u.zone_lng, radius_km: u.zone_radius } : null },
-    applications: all('SELECT id, kind, category, status, title, description, features, person_name, person_age, details, species, event_date, event_time, address, city, reward, created_at FROM applications WHERE user_id = ?', u.id)
-      .map((a) => Object.assign(a, { details: JSON.parse(a.details || '{}') })),
+    applications: all('SELECT id, kind, category, status, title, description, features, person_name, person_age, details, species, event_date, event_time, address, city, country, secret, ids, reward, created_at FROM applications WHERE user_id = ?', u.id)
+      .map((a) => Object.assign(a, { details: JSON.parse(a.details || '{}'), ids: JSON.parse(a.ids || '{}') })),
+    wards: all('SELECT id, kind, name, relation, birth_year, sex, species, details, ids, features, home_city, places, contact, qr_on, qr_photo, qr_phone, qr_note, consent_at, created_at FROM wards WHERE user_id = ?', u.id)
+      .map((w) => Object.assign(w, { details: JSON.parse(w.details || '{}'), ids: JSON.parse(w.ids || '{}') })),
     valuables: all('SELECT id, title, description, serials, marks, status, created_at FROM valuables WHERE user_id = ?', u.id),
     messages_sent: all('SELECT chat_id, text, created_at FROM messages WHERE sender_id = ? ORDER BY id', u.id),
     payments: all('SELECT p.id, t.name_ru tariff, p.amount, p.method, p.status, p.created_at, p.paid_at FROM payments p JOIN tariffs t ON t.id = p.tariff_id WHERE p.user_id = ?', u.id),
@@ -365,6 +371,8 @@ app.delete('/api/me', needAuth, h((req, res) => {
   tx(() => {
     run('DELETE FROM applications WHERE user_id = ?', req.user.id);
     run('DELETE FROM valuables WHERE user_id = ?', req.user.id);
+    run('DELETE FROM ward_alerts WHERE ward_id IN (SELECT id FROM wards WHERE user_id = ?)', req.user.id);
+    run('DELETE FROM wards WHERE user_id = ?', req.user.id);
     run('DELETE FROM push_subs WHERE user_id = ?', req.user.id);
     run('DELETE FROM notifications WHERE user_id = ?', req.user.id);
     run('DELETE FROM chats WHERE other_id = ?', req.user.id); // переписка по чужим заявкам (сообщения — каскадом)
@@ -377,7 +385,7 @@ app.delete('/api/me', needAuth, h((req, res) => {
     run('DELETE FROM points_log WHERE user_id = ?', req.user.id);
     run('DELETE FROM family_invites WHERE user_id = ? OR target IN (?, ?)', req.user.id, N(req.user.email) || '-', N(req.user.phone) || '-');
     const fam = req.user.family_id && get('SELECT * FROM families WHERE id = ? AND owner_id = ?', req.user.family_id, req.user.id);
-    if (fam) { run('UPDATE users SET family_id = NULL WHERE family_id = ?', fam.id); run('UPDATE applications SET family_id = NULL WHERE family_id = ?', fam.id); run('DELETE FROM family_invites WHERE family_id = ?', fam.id); run('DELETE FROM families WHERE id = ?', fam.id); }
+    if (fam) { run('UPDATE users SET family_id = NULL WHERE family_id = ?', fam.id); run('UPDATE applications SET family_id = NULL WHERE family_id = ?', fam.id); run('UPDATE wards SET family_id = NULL WHERE family_id = ?', fam.id); run('DELETE FROM family_invites WHERE family_id = ?', fam.id); run('DELETE FROM families WHERE id = ?', fam.id); }
     // платежи остаются для бухгалтерского учёта (54-ФЗ), но без привязки к контактам — пользователь удаляется
     run('DELETE FROM users WHERE id = ?', req.user.id);
   });
@@ -473,7 +481,11 @@ function appDto(a, viewer, extra = {}) {
     created_at: a.created_at, updated_at: a.updated_at, found_at: a.found_at,
     author: { role: author.role, level: S.levelOf(author.points).code },
     is_owner: owner, is_author: !!viewer && viewer.id === a.user_id,
-    contact: owner ? a.contact : undefined, reject_reason: owner ? a.reject_reason : undefined, family_shared: !!a.family_id
+    contact: owner ? a.contact : undefined, reject_reason: owner ? a.reject_reason : undefined, family_shared: !!a.family_id,
+    country: a.country || '', ward_id: owner ? a.ward_id || null : undefined,
+    // скрытая примета и номера (чип, серийный, ФИО в документе) видны только автору, семье и модератору
+    secret: owner ? a.secret || '' : undefined, ids: owner ? JSON.parse(a.ids || '{}') : undefined,
+    has_ids: !hidePd && a.ids && a.ids !== '{}' ? Object.keys(JSON.parse(a.ids)) : [], has_secret: !!a.secret
   };
   return Object.assign(o, extra);
 }
@@ -481,6 +493,7 @@ function appDto(a, viewer, extra = {}) {
 // Сведения о здоровье, национальности и инвалидности необязательны и нужны только чтобы узнать человека и помочь ему
 // (п. 3 ч. 2 ст. 10 152-ФЗ); после отметки «найден» скрываются вместе с остальными личными данными.
 const PHOTO_RE = /^\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/;
+const TEMPLATES = ['elderly', 'child', 'adult', 'dog', 'cat', 'pet_other', 'documents', 'electronics', 'keys', 'accessories', 'jewelry', 'clothes', 'bike', 'auto', 'things_other'];
 const PERSON_OPTS = {
   sex: ['male', 'female'], build: ['thin', 'normal', 'full'],
   hair_color: ['blond', 'light_brown', 'brown', 'black', 'red', 'gray', 'other'],
@@ -504,6 +517,10 @@ function readDetails(b, category) {
     d[k] = Math.round(v);
   };
   text('landmark', 150);
+  text('country_name', 80);
+  // шаблон заявки (пожилой человек, ребёнок, собака, документы…) — для подсказок и подбора совпадений
+  if (TEMPLATES.includes(src.template)) d.template = src.template;
+  if (category !== 'people') Object.assign(d, M.readPhotoMeta(src));
   if (Object.hasOwn(TRANSPORT, src.transport)) { d.transport = src.transport; text('transport_route', 100); }
   if (typeof src.place_photo === 'string' && PHOTO_RE.test(src.place_photo)) d.place_photo = src.place_photo;
   if (category === 'people') {
@@ -550,6 +567,12 @@ function readApp(b, isNew, existing) {
   o.photos = JSON.stringify(photos);
   const details = readDetails(b, category);
   o.details = JSON.stringify(details);
+  // страна (за границей), скрытая примета и уникальные номера
+  o.country = COUNTRIES.normCountry(b.country);
+  // страны вне справочника (определены по карте) принимаем по коду ISO; название — из details.country_name
+  if (!o.country && details.country_name) { delete details.country_name; o.details = JSON.stringify(details); }
+  o.secret = str(b.secret, 300);
+  o.ids = JSON.stringify(M.readIds(b.ids, category, details.thing_type));
   if (details.thing_type) o.species = THINGS.THING_TYPES[details.thing_type].ru;
   if (!o.title && category === 'animals') o.title = petTitle(kind, o.species, details);
   if (!o.title) fail(400, 'title_required', 'Укажите заголовок');
@@ -602,6 +625,28 @@ app.get('/api/applications', h((req, res) => {
   res.json({ total: list.length, items: list.slice(0, limit).map((x) => appDto(x.a, req.user, { distance: x.d })) });
 }));
 
+// Совпадения заявки для её автора: сильные (≥ 50 %) — всем; «возможные» (35–49 %) — по заявкам о людях всем,
+// по животным и вещам — с тарифом «Расширенный поиск». Пары, отклонённые этой стороной или владельцем пропажи, скрыты.
+function matchRows(a) {
+  const mine = a.kind === 'lost' ? 'lost' : 'found', oth = a.kind === 'lost' ? 'found_id' : 'lost_id';
+  return all(`SELECT m.id match_id, m.score, m.reasons, m.lost_vote, m.found_vote, x.* FROM matches m JOIN applications x ON x.id = m.${oth}
+    WHERE m.${mine}_id = ? AND x.status IN ('published','found') AND m.lost_vote != 'no' AND m.${mine}_vote != 'no' ORDER BY m.score DESC`, a.id)
+    .map((x) => Object.assign(x, { my_vote: x[mine + '_vote'], their_vote: x[(mine === 'lost' ? 'found' : 'lost') + '_vote'] }));
+}
+function matchesFor(a, u) {
+  const rows = matchRows(a);
+  const weakOk = a.category === 'people' || S.hasPlus(a.user_id) || (u && S.hasPlus(u.id));
+  const vis = rows.filter((m) => m.score >= M.STRONG || weakOk);
+  return {
+    matches: vis.map((x) => appDto(x, u, { score: x.score, match_id: x.match_id, reasons: JSON.parse(x.reasons || '[]'), weak: x.score < M.STRONG, my_vote: x.my_vote, their_vote: x.their_vote })),
+    weak_hidden: rows.length - vis.length
+  };
+}
+function notifyFamily(a, exceptId, title, body) {
+  if (!a.family_id) return;
+  for (const m of all('SELECT id FROM users WHERE family_id = ? AND id != ?', a.family_id, exceptId)) S.notify(m.id, { type: 'family', title, body, link: `#/a/${a.id}`, pushTitle: title, pushBody: 'Откройте платформу, чтобы узнать подробности' });
+}
+
 app.get('/api/applications/:id', h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
   if (!a) fail(404, 'not_found', 'Заявка не найдена');
@@ -617,8 +662,7 @@ app.get('/api/applications/:id', h((req, res) => {
   }
   if (canEdit(a, req.user)) {
     const col = a.kind === 'lost' ? 'lost_id' : 'found_id', oth = a.kind === 'lost' ? 'found_id' : 'lost_id';
-    extra.matches = all(`SELECT m.score, x.* FROM matches m JOIN applications x ON x.id = m.${oth} WHERE m.${col} = ? AND x.status IN ('published','found') ORDER BY m.score DESC`, a.id)
-      .map((x) => appDto(x, req.user, { score: x.score }));
+    Object.assign(extra, matchesFor(a, req.user));
     extra.chats = all(`SELECT c.id, c.other_id, c.created_at, (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) msgs FROM chats c WHERE c.application_id = ?`, a.id)
       .map((c, i) => ({ id: c.id, alias: 'Собеседник ' + (i + 1), helper_id: c.other_id, msgs: c.msgs }));
   }
@@ -630,6 +674,9 @@ app.post('/api/applications', needAuth, h((req, res) => {
   const o = readApp(req.body, true);
   o.user_id = req.user.id;
   o.family_id = req.body.family && req.user.family_id ? req.user.family_id : null;
+  // заявка из карточки «Мои близкие»: связь с карточкой (своей или семейной)
+  const ward = num(req.body.ward_id) && get('SELECT * FROM wards WHERE id = ?', num(req.body.ward_id));
+  if (ward && (ward.user_id === req.user.id || (ward.family_id && ward.family_id === req.user.family_id)) && o.kind === 'lost') { o.ward_id = ward.id; if (ward.family_id && req.user.family_id === ward.family_id) o.family_id = ward.family_id; }
   o.status = o.category === 'people' ? 'pending' : 'published';
   if (num(req.body.emergency_radius) && o.kind === 'lost' && o.category !== 'things') { o.emergency_radius = emRadius(req.body.emergency_radius); o.emergency_status = 'pending'; }
   const keys = Object.keys(o);
@@ -641,6 +688,7 @@ app.post('/api/applications', needAuth, h((req, res) => {
   else notifyMods('Новая заявка на проверке', `«${a.title}»`, '#/admin/moderation');
   if (a.emergency_status === 'pending') notifyMods('Запрос экстренного оповещения', `«${a.title}», радиус ${a.emergency_radius} км`, '#/admin/emergency');
   res.json({ item: appDto(a, req.user), matches: matches.length });
+  if (a.ward_id) notifyFamily(a, req.user.id, 'Близкий в поиске', `Подана заявка «${a.title}»`);
 }));
 // Защита от накрутки баллов вторыми аккаунтами: сколько начислений этого вида было за сутки
 const pointsToday = (uid, prefix) => get("SELECT COUNT(*) c FROM points_log WHERE user_id = ? AND reason LIKE ? AND created_at > datetime('now','-1 day')", uid, prefix + '%').c;
@@ -685,6 +733,13 @@ app.post('/api/applications/:id/status', needAuth, h((req, res) => {
     audit(req, 'points.helper', 'user:' + helper, String(a.user_id));
   }
   if (st === 'found' && pointsToday(a.user_id, 'Заявка отмечена') < 3) S.addPoints(a.user_id, 10, 'Заявка отмечена как «найдено»');
+  // пара, которую кто-то из сторон подтвердил («Это оно»): второй стороне предлагаем закрыть свою заявку
+  if (st === 'found') {
+    const col = a.kind === 'lost' ? 'lost_id' : 'found_id', oth = a.kind === 'lost' ? 'found_id' : 'lost_id';
+    for (const x of all(`SELECT x.* FROM matches m JOIN applications x ON x.id = m.${oth} WHERE m.${col} = ? AND (m.lost_vote = 'yes' OR m.found_vote = 'yes') AND x.status = 'published'`, a.id))
+      S.notify(x.user_id, { type: 'status', title: 'Пара подтверждена — закройте свою заявку', body: `«${a.title}» отмечена «найдено». Если вопрос решён, отметьте и свою заявку «${x.title}».`, link: `#/a/${x.id}`, email: false });
+  }
+  if (a.ward_id && st === 'found') notifyFamily(a, req.user.id, 'Близкий найден', `Заявка «${a.title}» отмечена «найдено»`);
   // уведомить участников чатов
   for (const c of all('SELECT other_id FROM chats WHERE application_id = ?', a.id))
     S.notify(c.other_id, { type: 'status', title: st === 'found' ? 'Заявка отмечена «найдено»' : 'Заявка закрыта', body: a.category === 'people' ? 'Спасибо за участие!' : `«${a.title}»`, link: `#/a/${a.id}`, email: false });
@@ -721,6 +776,28 @@ app.post('/api/applications/:id/save', needAuth, h((req, res) => {
   res.json({ saved: !ex });
 }));
 
+
+// «Это оно» / «Не то» по совпадению. Голос хранится за стороной (пропажа / находка).
+// «Это оно» уведомляет другую сторону; «Не то» от владельца пропажи скрывает пару у обоих.
+app.post('/api/matches/:id/vote', needAuth, h((req, res) => {
+  const m = get('SELECT * FROM matches WHERE id = ?', Number(req.params.id));
+  if (!m) fail(404, 'not_found', 'Совпадение не найдено');
+  const lost = get('SELECT * FROM applications WHERE id = ?', m.lost_id), found = get('SELECT * FROM applications WHERE id = ?', m.found_id);
+  const side = lost && canEdit(lost, req.user) ? 'lost' : found && canEdit(found, req.user) ? 'found' : fail(404, 'not_found', 'Совпадение не найдено');
+  const vote = ['yes', 'no', ''].includes(req.body.vote) ? req.body.vote : fail(400, 'bad_vote', 'Ответ: «это оно» или «не то»');
+  run(`UPDATE matches SET ${side}_vote = ?, updated_at = datetime('now') WHERE id = ?`, vote, m.id);
+  audit(req, 'match.vote', 'match:' + m.id, side + ':' + (vote || 'reset'));
+  if (vote === 'yes' && m[side + '_vote'] !== 'yes') {
+    const [mine, theirs] = side === 'lost' ? [lost, found] : [found, lost];
+    if (theirs.status === 'published') S.notify(theirs.user_id, {
+      type: 'match', title: side === 'lost' ? 'Владелец узнал свою пропажу' : 'Нашедший узнал вашу пропажу',
+      body: side === 'lost' ? `Автор заявки «${mine.title}» считает, что ваша находка «${theirs.title}» — его. Ответьте в чате.` : `Автор находки «${mine.title}» считает, что нашёл то, что вы ищете: «${theirs.title}».`,
+      link: `#/a/${mine.id}`, pushTitle: 'Совпадение подтверждено', pushBody: 'Откройте платформу, чтобы узнать подробности'
+    });
+  }
+  res.json({ ok: true, vote });
+}));
+
 // Запрос на удаление от человека, о котором подана заявка (без регистрации)
 app.post('/api/applications/:id/deletion-request', h((req, res) => {
   rateLimit('del:' + req.ip, 5, 3600e3);
@@ -737,8 +814,7 @@ app.post('/api/applications/:id/deletion-request', h((req, res) => {
 app.get('/api/my/applications', needAuth, h((req, res) => {
   const rows = all('SELECT * FROM applications WHERE user_id = ? OR (family_id IS NOT NULL AND family_id = ?) ORDER BY created_at DESC', req.user.id, N(req.user.family_id));
   res.json({ items: rows.map((a) => {
-    const col = a.kind === 'lost' ? 'lost_id' : 'found_id';
-    return appDto(a, req.user, { match_count: get(`SELECT COUNT(*) c FROM matches WHERE ${col} = ?`, a.id).c });
+    return appDto(a, req.user, { match_count: matchRows(a).filter((m) => m.score >= M.STRONG).length });
   }) });
 }));
 app.get('/api/my/saved', needAuth, h((req, res) => {
@@ -747,7 +823,7 @@ app.get('/api/my/saved', needAuth, h((req, res) => {
 
 /* ---------- анонимный чат ---------- */
 function chatFor(id, u) {
-  const c = get('SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.user_id app_user, a.family_id FROM chats c JOIN applications a ON a.id = c.application_id WHERE c.id = ?', id);
+  const c = get('SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.user_id app_user, a.family_id, a.secret FROM chats c JOIN applications a ON a.id = c.application_id WHERE c.id = ?', id);
   if (!c) fail(404, 'not_found', 'Чат не найден');
   const isOwnerSide = c.owner_id === u.id || (c.family_id && u.family_id === c.family_id);
   if (!isOwnerSide && c.other_id !== u.id && !isMod(u)) fail(404, 'not_found', 'Чат не найден');
@@ -763,8 +839,15 @@ function chatDto(c, u) {
     side: c.side, alias: aliasOther, blocked: !!c.blocked_by, blocked_by_me: c.blocked_by === u.id,
     last: last ? { text: last.text, photo: !!last.photo, location: last.lat != null, created_at: last.created_at, mine: last.sender_id === u.id } : null,
     unread: get('SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND sender_id != ? AND read = 0', c.id, myId).c,
-    created_at: c.created_at
+    created_at: c.created_at,
+    // проверка скрытой приметы: автор заявки указал примету, которую знает только настоящий владелец (или нашедший)
+    verify: c.secret ? verifyState(c) : null
   };
+}
+const VERIFY_MAX = 3;
+function verifyState(c) {
+  const v = all("SELECT meta FROM messages WHERE chat_id = ? AND meta LIKE 'verify_%'", c.id).map((m) => m.meta);
+  return { ok: v.includes('verify_ok'), tries: v.length, left: v.includes('verify_ok') ? 0 : Math.max(0, VERIFY_MAX - v.length) };
 }
 app.post('/api/applications/:id/chat', needAuth, h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
@@ -779,7 +862,7 @@ app.post('/api/applications/:id/chat', needAuth, h((req, res) => {
   res.json({ id: c.id });
 }));
 app.get('/api/chats', needAuth, h((req, res) => {
-  const rows = all(`SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.family_id FROM chats c JOIN applications a ON a.id = c.application_id
+  const rows = all(`SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.family_id, a.secret FROM chats c JOIN applications a ON a.id = c.application_id
     WHERE c.owner_id = ? OR c.other_id = ? OR (a.family_id IS NOT NULL AND a.family_id = ?) ORDER BY c.id DESC`, req.user.id, req.user.id, N(req.user.family_id));
   const items = rows.map((c) => { c.side = c.other_id === req.user.id ? 'other' : 'owner'; return chatDto(c, req.user); })
     .sort((x, y) => String(y.last ? y.last.created_at : y.created_at).localeCompare(String(x.last ? x.last.created_at : x.created_at)));
@@ -794,8 +877,8 @@ app.get('/api/chats/:id', needAuth, h((req, res) => {
     // upto — до какого сообщения прочитано: ответ на отправку может прийти к автору позже этого события
     if (ch && ch.changes) S.emit(c.side === 'owner' ? c.other_id : c.owner_id, 'chat_read', { chat_id: c.id, upto: get('SELECT MAX(id) m FROM messages WHERE chat_id = ?', c.id).m });
   }
-  const msgs = all('SELECT id, sender_id, text, photo, lat, lng, read, created_at FROM messages WHERE chat_id = ? ORDER BY id', c.id)
-    .map((m) => ({ id: m.id, mine: m.sender_id === myId || (c.side === 'owner' && m.sender_id !== c.other_id), text: m.text, photo: m.photo, lat: m.lat, lng: m.lng, read: !!m.read, created_at: m.created_at, from: m.sender_id === c.other_id ? 'other' : 'owner' }));
+  const msgs = all('SELECT id, sender_id, text, photo, lat, lng, read, meta, created_at FROM messages WHERE chat_id = ? ORDER BY id', c.id)
+    .map((m) => ({ id: m.id, mine: m.sender_id === myId || (c.side === 'owner' && m.sender_id !== c.other_id), text: m.text, photo: m.photo, lat: m.lat, lng: m.lng, read: !!m.read, meta: m.meta || '', created_at: m.created_at, from: m.sender_id === c.other_id ? 'other' : 'owner' }));
   res.json({ chat: chatDto(c, req.user), messages: msgs });
 }));
 app.post('/api/chats/:id/messages', needAuth, h((req, res) => {
@@ -824,6 +907,30 @@ app.post('/api/chats/:id/block', needAuth, h((req, res) => {
   run('UPDATE chats SET blocked_by = ? WHERE id = ?', block ? req.user.id : null, c.id);
   audit(req, block ? 'chat.block' : 'chat.unblock', 'chat:' + c.id);
   res.json({ ok: true });
+}));
+
+
+// Проверка скрытой приметы в чате: собеседник автора заявки называет примету, сервер сверяет её с той,
+// что автор указал скрыто. Сам текст приметы никому не показывается; ответ собеседника виден в чате обоим.
+// Три попытки на чат.
+app.post('/api/chats/:id/verify', needAuth, h((req, res) => {
+  const c = chatFor(Number(req.params.id), req.user);
+  if (c.side !== 'other') fail(403, 'forbidden', 'Проверку проходит собеседник автора заявки');
+  if (!c.secret) fail(400, 'no_secret', 'Автор заявки не указал скрытую примету');
+  if (c.blocked_by) fail(403, 'blocked', 'Переписка заблокирована');
+  const st = verifyState(c);
+  if (st.ok) fail(400, 'verified', 'Проверка уже пройдена');
+  if (!st.left) fail(429, 'verify_limit', 'Попытки закончились. Договоритесь с автором заявки в чате');
+  const answer = str(req.body.answer, 300);
+  if (answer.length < 2) fail(400, 'required', 'Напишите примету');
+  const ok = M.commonWords(c.secret, answer).length >= Math.min(2, M.commonWords(c.secret, c.secret).length) && M.commonWords(c.secret, answer).length > 0;
+  const meta = ok ? 'verify_ok' : 'verify_fail';
+  const id = run('INSERT INTO messages (chat_id, sender_id, text, meta) VALUES (?,?,?,?)', c.id, req.user.id, answer, meta).lastInsertRowid;
+  const msg = { id, chat_id: c.id, text: answer, photo: '', lat: null, lng: null, read: false, meta, created_at: now() };
+  S.emit(c.owner_id, 'message', Object.assign({ mine: false, from: 'other' }, msg));
+  S.notify(c.owner_id, { type: 'chat', title: ok ? 'Собеседник назвал скрытую примету' : 'Скрытая примета не совпала', body: `Чат по заявке «${c.title}»`, link: `#/chat/${c.id}`, pushTitle: 'Проверка приметы', pushBody: 'Откройте чат, чтобы узнать результат', email: false });
+  audit(req, 'chat.verify', 'chat:' + c.id, meta);
+  res.json({ ok, message: Object.assign({ mine: true, from: 'other' }, msg), verify: verifyState(c) });
 }));
 
 /* ---------- жалобы ---------- */
@@ -973,6 +1080,8 @@ function completePayment(id, ok, cardMask, cardToken) {
     const token = cardToken || (PAY === 'test' ? 'tok_' + crypto.randomBytes(12).toString('hex') : null);
     if (p.save_card && p.method === 'card' && cardMask && token) run('UPDATE users SET card_token = ?, card_mask = ? WHERE id = ?', token, cardMask, u.id);
   });
+  // «Расширенный поиск»: сразу показываем «возможные» совпадения по уже поданным заявкам
+  if (t.feature === 'search_plus') for (const a of all("SELECT * FROM applications WHERE user_id = ? AND status = 'published'", u.id)) S.runMatching(a);
   S.notify(u.id, { type: 'payment', title: 'Оплата прошла успешно', body: `${t.name_ru} — ${p.amount} ₽. Чек отправлен на ${receipt.customer}.`, link: '#/me/payments', pushTitle: 'Оплата прошла', pushBody: 'Тариф подключён' });
   return get('SELECT * FROM payments WHERE id = ?', id);
 }
@@ -1091,17 +1200,20 @@ app.post('/api/family/leave', needAuth, h((req, res) => {
   const f = req.user.family_id && get('SELECT * FROM families WHERE id = ?', req.user.family_id);
   if (!f) fail(400, 'none', 'Вы не в семейном аккаунте');
   if (f.owner_id === req.user.id) {
-    tx(() => { run('UPDATE users SET family_id = NULL WHERE family_id = ?', f.id); run('UPDATE applications SET family_id = NULL WHERE family_id = ?', f.id); run('DELETE FROM family_invites WHERE family_id = ?', f.id); run('DELETE FROM families WHERE id = ?', f.id); });
-  } else { run('UPDATE users SET family_id = NULL WHERE id = ?', req.user.id); run('UPDATE applications SET family_id = NULL WHERE user_id = ?', req.user.id); }
+    tx(() => { run('UPDATE users SET family_id = NULL WHERE family_id = ?', f.id); run('UPDATE applications SET family_id = NULL WHERE family_id = ?', f.id); run('UPDATE wards SET family_id = NULL WHERE family_id = ?', f.id); run('DELETE FROM family_invites WHERE family_id = ?', f.id); run('DELETE FROM families WHERE id = ?', f.id); });
+  } else { run('UPDATE users SET family_id = NULL WHERE id = ?', req.user.id); run('UPDATE applications SET family_id = NULL WHERE user_id = ?', req.user.id); run('UPDATE wards SET family_id = NULL WHERE user_id = ?', req.user.id); }
   audit(req, 'family.leave', 'family:' + f.id); res.json({ ok: true });
 }));
 app.delete('/api/family/members/:uid', needAuth, h((req, res) => {
   const f = req.user.family_id && get('SELECT * FROM families WHERE id = ?', req.user.family_id);
   if (!f || f.owner_id !== req.user.id) fail(403, 'forbidden', 'Только владелец');
   const uid = Number(req.params.uid);
-  if (run('UPDATE users SET family_id = NULL WHERE id = ? AND family_id = ? AND id != ?', uid, f.id, req.user.id).changes) run('UPDATE applications SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id);
+  if (run('UPDATE users SET family_id = NULL WHERE id = ? AND family_id = ? AND id != ?', uid, f.id, req.user.id).changes) { run('UPDATE applications SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id); run('UPDATE wards SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id); }
   audit(req, 'family.remove', 'user:' + uid); res.json({ ok: true });
 }));
+
+/* ---------- «Мои близкие» и QR-коды (server/wards.js) ---------- */
+WARDS.register(app, { h, needAuth, fail, str, num, audit, rateLimit, get, all, run, tx, S, PHOTO_RE, PERSON_OPTS, PERSON_TEXT, HEALTH, PET_TEXT, BASE: S.BASE_URL.replace(/\/$/, '') });
 
 /* ---------- сообщество, рейтинг, истории, лиды ---------- */
 app.post('/api/role-requests', needAuth, h((req, res) => {
@@ -1388,7 +1500,7 @@ AD.get('/status', h((req, res) => res.json({ items: readiness() })));
 AD.get('/outbox', h((req, res) => res.json({ items: all('SELECT * FROM outbox ORDER BY id DESC LIMIT 200') })));
 AD.get('/tariffs', h((req, res) => res.json({ items: all('SELECT * FROM tariffs ORDER BY sort, id') })));
 AD.post('/tariffs', h((req, res) => {
-  const b = req.body, f = ['registry', 'promote', 'partner'].includes(b.feature) ? b.feature : fail(400, 'bad_feature', 'Функция тарифа');
+  const b = req.body, f = ['registry', 'promote', 'partner', 'search_plus'].includes(b.feature) ? b.feature : fail(400, 'bad_feature', 'Функция тарифа');
   const vals = [str(b.name_ru, 80), str(b.name_en, 80) || str(b.name_ru, 80), str(b.desc_ru, 300), str(b.desc_en, 300), b.audience === 'partner' ? 'partner' : 'user', Math.max(0, Math.round(num(b.price) || 0)), Math.max(1, Math.round(num(b.period_days) || 30)), f, b.active === false ? 0 : 1, Math.round(num(b.sort) || 0)];
   if (!vals[0]) fail(400, 'name_required', 'Название');
   if (b.id) run('UPDATE tariffs SET name_ru=?, name_en=?, desc_ru=?, desc_en=?, audience=?, price=?, period_days=?, feature=?, active=?, sort=? WHERE id = ?', ...vals, Number(b.id));
@@ -1485,7 +1597,9 @@ setInterval(() => { try { backup(); } catch (e) { console.error('backup', e); } 
 function cleanUploads() {
   const used = new Set();
   const grab = (v) => { for (const m of String(v || '').matchAll(/\/uploads\/([a-f0-9]{32}\.(?:jpg|png|webp))/g)) used.add(m[1]); };
-  for (const r of all('SELECT photos FROM applications')) grab(r.photos);
+  // фото места хранится в параметрах заявки (details.place_photo), фото близких — в карточках
+  for (const r of all('SELECT photos, details FROM applications')) { grab(r.photos); grab(r.details); }
+  for (const r of all('SELECT photos FROM wards')) grab(r.photos);
   for (const r of all('SELECT photos FROM valuables')) grab(r.photos);
   for (const r of all("SELECT photo FROM messages WHERE photo != ''")) grab(r.photo);
   for (const r of all("SELECT avatar FROM users WHERE avatar != ''")) grab(r.avatar);
@@ -1506,11 +1620,14 @@ function retention() {
     run("DELETE FROM sessions WHERE created_at < datetime('now', '-30 days')");
     run("DELETE FROM audit WHERE created_at < datetime('now', '-1 year')");
     run("DELETE FROM outbox WHERE created_at < datetime('now', '-1 year')");
+    run("DELETE FROM ward_alerts WHERE created_at < datetime('now', '-1 year')");
   } catch (e) { console.error('retention', e); }
   try { cleanUploads(); } catch (e) { console.error('uploads gc', e); }
 }
 retention();
 setInterval(retention, 24 * 3600e3).unref();
+// подбор совпадений заново: с каждым днём радиус поиска пропажи растёт
+setInterval(() => S.rematchAll(), 6 * 3600e3).unref();
 
 /* ---------- статика и SPA ---------- */
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d', immutable: true }));

@@ -35,6 +35,20 @@ const EXACT = {
   'Заявка на роль отклонена': 'Role request declined',
   'Экстренный поиск человека рядом': 'Urgent search for a person nearby',
   'Экстренный поиск животного рядом': 'Urgent search for a pet nearby',
+  'Ваш предмет из реестра, возможно, нашли': 'Your registered item may have been found',
+  'Предмет из реестра нашли': 'Registered item found',
+  'Владелец узнал свою пропажу': 'The owner recognised their lost item',
+  'Нашедший узнал вашу пропажу': 'A finder recognised what you lost',
+  'Совпадение подтверждено': 'Match confirmed',
+  'Пара подтверждена — закройте свою заявку': 'Match confirmed — please close your report',
+  'Собеседник назвал скрытую примету': 'The other person named the hidden detail',
+  'Скрытая примета не совпала': 'The hidden detail did not match',
+  'Проверка приметы': 'Detail check',
+  'Откройте чат, чтобы узнать результат': 'Open the chat to see the result',
+  'Сработал QR-код близкого': 'Your loved one’s QR code was scanned',
+  'Нашедший оставил сообщение. Откройте платформу': 'The finder left a message. Open the platform',
+  'Близкий в поиске': 'A loved one is being searched for',
+  'Близкий найден': 'Your loved one has been found',
   // push
   'Мой лучший агент': 'My Best Agent',
   'Новое уведомление': 'New notification',
@@ -79,7 +93,15 @@ const EXACT = {
 const RULES = [
   [/^Возможное совпадение (\d+)%$/, 'Possible match $1%'],
   [/^\+(\d+) балл(?:ов|а)?$/, '+$1 points'],
-  [/^По вашей заявке «(.*)» найдена похожая: «(.*)»\.$/s, 'A similar report was found for «$1»: «$2».'],
+  [/^По вашей заявке «(.*)» найдена похожая: «(.*)»\.( .*)?$/s, (m, a, b, why) => `A similar report was found for «${a}»: «${b}».` + (why ? ' ' + (WHY[why.trim()] || why.trim()) : '')],
+  [/^Автор заявки «(.*)» считает, что ваша находка «(.*)» — его\. Ответьте в чате\.$/s, 'The author of «$1» believes your find «$2» is theirs. Reply in the chat.'],
+  [/^Автор находки «(.*)» считает, что нашёл то, что вы ищете: «(.*)»\.$/s, 'The author of «$1» believes they found what you are looking for: «$2».'],
+  [/^«(.*)» отмечена «найдено»\. Если вопрос решён, отметьте и свою заявку «(.*)»\.$/s, '«$1» was marked as found. If it is settled, mark your report «$2» too.'],
+  [/^«(.*)» похож на находку «(.*)»\.$/s, '«$1» looks like the found item «$2».'],
+  [/^Нашли питомца «(.*)» по QR-коду$/s, 'Your pet «$1» was found via the QR code'],
+  [/^Нашли по QR-коду: (.*)$/s, 'Found via the QR code: $1'],
+  [/^Подана заявка «(.*)»$/s, 'Report filed: «$1»'],
+  [/^Заявка «(.*)» отмечена «найдено»$/s, 'Report «$1» was marked as found'],
   [/^«(.*)», радиус ([\d.]+) км$/s, '«$1», radius $2 km'],
   [/^Чат по заявке «(.*)»$/s, 'Chat about «$1»'],
   [/^По заявке «(.*)»$/s, 'About «$1»'],
@@ -92,6 +114,12 @@ const RULES = [
   [/^(.*) — (\d+) ₽\. Чек отправлен на (.*)\.$/s, (m, name, sum, to) => `${tariffEn(name)} — ${sum} ₽. Receipt sent to ${to}.`]
 ];
 
+const WHY = {
+  'Совпал номер чипа.': 'The chip number matches.', 'Совпало клеймо.': 'The tattoo matches.', 'Совпал серийный номер.': 'The serial number matches.',
+  'Совпали ФИО в документе.': 'The name on the document matches.', 'Совпал госномер.': 'The licence plate matches.', 'Совпал номер.': 'The number matches.',
+  'Совпала скрытая примета.': 'The hidden detail matches.', 'Совпадает фото.': 'The photo matches.', 'Совпала порода.': 'The breed matches.',
+  'Совпала одежда.': 'The clothing matches.', 'Совпал бренд.': 'The brand matches.', 'Совпал цвет.': 'The colour matches.'
+};
 function tariffEn(name) {
   const t = all('SELECT name_en FROM tariffs WHERE name_ru = ?', name)[0];
   return t ? t.name_en : name;

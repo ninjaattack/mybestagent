@@ -421,7 +421,7 @@ describe('Личный кабинет (Анна)', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await open(page, '#/me');
     assert.equal(await page.locator('.acc-tiles').isVisible(), false, 'плитки обзора — только на компьютере');
-    assert.equal(await page.locator('.acc-rows a').count(), 12, 'все разделы строками');
+    assert.equal(await page.locator('.acc-rows a').count(), 13, 'все разделы строками');
     assert.equal(await page.locator('.acc-bar').count(), 0, 'на обзоре кнопка «Кабинет» не нужна');
     const rows = await page.$$eval('.acc-rows a', (as) => as.map((a) => Math.round(a.getBoundingClientRect().height)));
     assert.ok(rows.every((x) => x >= 44), 'строки разделов крупные: ' + rows.join(','));
@@ -438,7 +438,7 @@ describe('Личный кабинет (Анна)', () => {
     }
     await page.locator('#accAll').click();
     await page.waitForSelector('.sheet .acc-sheet');
-    assert.equal(await page.locator('.sheet .acc-sheet a').count(), 13);
+    assert.equal(await page.locator('.sheet .acc-sheet a').count(), 14);
     await page.locator('.sheet .acc-sheet a[href="#/me/zone"]').click();
     await page.waitForFunction(() => location.hash === '#/me/zone' && !document.querySelector('.sheet .acc-sheet'));
     assert.deepEqual(page.errors, []);
@@ -591,7 +591,7 @@ describe('Мастер заявки', () => {
     await login(page, 'anna@example.com');
     await open(page, '#/new/lost');
     assert.equal(await page.locator('.tabbar').isVisible(), false, 'нижняя панель скрыта');
-    await page.locator('.pick[data-cat=people]').click();
+    await page.locator('[data-tpl=adult]').click();
     await page.waitForSelector('select[name=relation]');
     const next = await page.locator('#next').boundingBox();
     assert.ok(next.y + next.height > 780 - 80, '«Далее» у нижнего края: ' + JSON.stringify(next));
@@ -605,7 +605,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/found');
-    await page.locator('[data-cat="animals"]').click();
+    await page.locator('[data-tpl="cat"]').click();
     await page.locator('input[name="title"]').fill('Найден серый кот в ошейнике');
     await page.locator('textarea[name="features"]').fill('серый, голубой ошейник');
     await page.locator('#next').click();
@@ -625,7 +625,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/lost');
-    await page.locator('[data-cat="animals"]').click();
+    await page.locator('[data-tpl="dog"]').click();
     await page.locator('select[name="species"]').selectOption('Собака');
     assert.ok(await page.locator('#breedList option[value="Такса"]').count(), 'подсказки пород для собак');
     await page.locator('input[name="breed"]').fill('Такса');
@@ -646,7 +646,7 @@ describe('Мастер заявки', () => {
     await page.locator('#next').click();
     await page.locator('#next').click(); // опубликовать
     await page.waitForSelector('.success h2');
-    await page.locator('.success a[href^="#/a/"]').click();
+    await page.locator('.success a[href^="#/a/"]').first().click();
     await page.waitForSelector('dl.kv');
     assert.match(await page.locator('h1').innerText(), /Пропажа: собака, такса, рыжий/);
     const kv = await page.locator('dl.kv').first().innerText();
@@ -659,12 +659,10 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'lisa@example.com');
     await open(page, '#/new/found');
-    await page.locator('[data-cat="things"]').click();
+    await page.locator('[data-tpl="accessories"]').click();
     await page.locator('input[name="title"]').fill('Найден синий зонт');
-    await page.locator('#next').click(); // тип вещи не выбран — шаг не пройти
-    await page.waitForSelector('.field.has-err .tpick');
-    assert.equal(await page.locator('input[name="th_color"]').count(), 0, 'уточнения появляются после выбора типа');
-    await page.locator('.tpick label', { hasText: 'Аксессуары' }).click();
+    assert.ok(await page.locator('input[name="thing_type"][value="accessories"]').isChecked(), 'шаблон сразу выбирает тип вещи');
+    assert.ok(await page.locator('.tpl-note').isVisible(), 'подсказка шаблона');
     await page.locator('input[name="th_color"]').fill('синий');
     assert.equal(await page.locator('input[name="title"]').inputValue(), 'Найден синий зонт', 'смена типа не стирает введённое');
     await page.locator('#next').click();
@@ -695,7 +693,9 @@ describe('Мастер заявки', () => {
     const href = await page.locator('.success a[href^="#/a/"]').first().getAttribute('href');
     const item = await page.evaluate(async (id) => (await (await fetch('/api/applications/' + id)).json()).item, href.split('/').pop());
     assert.equal(item.photos.length, 1, 'фото сохранилось в заявке');
-    assert.deepEqual(item.details, { thing_type: 'accessories', color: 'синий' }, 'тип и уточнения вещи сохранились');
+    const { photo_colors, photo_hash, ...det } = item.details;
+    assert.deepEqual(det, { thing_type: 'accessories', color: 'синий', template: 'accessories' }, 'тип и уточнения вещи сохранились');
+    assert.ok(Array.isArray(photo_hash) && photo_hash.length === 1 && (photo_colors === undefined || Array.isArray(photo_colors)), 'отпечаток фото посчитан в браузере');
     assert.deepEqual(page.errors, []);
     await page.context().close();
   });
@@ -703,7 +703,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'max@example.com');
     await open(page, '#/new/lost');
-    await page.locator('[data-cat="people"]').click();
+    await page.locator('[data-tpl="adult"]').click();
     await page.locator('#next').click();
     // ошибка показывается у поля: рамка, текст под полем, фокус в поле
     await page.waitForSelector('.field.has-err .ferr');
@@ -721,7 +721,7 @@ describe('Мастер заявки', () => {
     const page = await newPage();
     await login(page, 'max@example.com');
     await open(page, '#/new/lost');
-    await page.locator('[data-cat="people"]').click();
+    await page.locator('[data-tpl="elderly"]').click();
     assert.match(await page.locator('.wizard').innerText(), /Шаг 2 \/ 6/, 'у заявки о человеке отдельный шаг «Приметы»');
     assert.equal(await page.locator('[name=last_seen]').count(), 0, 'место — на шаге «Место», а не строкой в описании');
     await page.locator('input[name=person_name]').fill('Нина Петрова');
@@ -1160,7 +1160,7 @@ describe('Навигация и права доступа', () => {
     await login(page, 'anna@example.com');
     await open(page, '#/me');
     const icons = await page.$$eval('.me-nav nav a svg', (l) => l.map((s) => s.innerHTML));
-    assert.equal(icons.length, 13, 'все разделы кабинета, включая «Сообщения», «Уведомления», «Поддержку»');
+    assert.equal(icons.length, 14, 'все разделы кабинета, включая «Сообщения», «Уведомления», «Поддержку»');
     assert.equal(new Set(icons).size, icons.length, 'иконки разделов не повторяются');
     const home = await page.$eval('#tabbar a[href="#/"] svg', (s) => s.innerHTML).catch(() => '');
     assert.ok(!icons.includes(home), '«Обзор» не совпадает с «Главной»');

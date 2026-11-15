@@ -220,7 +220,7 @@ describe('Публичные эндпоинты', () => {
     const t = await c.get('/api/tariffs');
     assert.equal(t.status, 200);
     assert.equal(t.body.discount, 0);
-    assert.deepEqual(t.body.items.map((x) => x.code).sort(), ['partner', 'promote', 'registry_plus']);
+    assert.deepEqual(t.body.items.map((x) => x.code).sort(), ['partner', 'promote', 'registry_plus', 'search_plus']);
     assert.ok(t.body.items.every((x) => x.final_price === x.price));
   });
 

@@ -2,14 +2,18 @@
 // Параметры заявок о вещах: тип вещи и уточнения, которые помогают узнать именно эту вещь.
 // Хранятся в applications.details (JSON); русское название типа дублируется в species — по нему работают поиск и совпадения.
 const THING_TYPES = {
-  clothes: { ru: 'Одежда', en: 'Clothing', fields: ['size', 'color', 'brand'] },
-  accessories: { ru: 'Аксессуары', en: 'Accessories', fields: ['brand', 'color', 'material'] },
+  documents: { ru: 'Документы', en: 'Documents', fields: ['doc_kind', 'color'] },
+  electronics: { ru: 'Телефон, электроника', en: 'Phone, electronics', fields: ['brand', 'model', 'color'] },
+  keys: { ru: 'Ключи', en: 'Keys', fields: ['keyring', 'color'] },
+  accessories: { ru: 'Сумка, кошелёк, аксессуары', en: 'Bag, wallet, accessories', fields: ['brand', 'color', 'material'] },
   jewelry: { ru: 'Украшения', en: 'Jewellery', fields: ['metal', 'stones', 'engraving'] },
+  clothes: { ru: 'Одежда', en: 'Clothing', fields: ['size', 'color', 'brand'] },
+  bike: { ru: 'Велосипед, самокат', en: 'Bicycle, scooter', fields: ['brand', 'model', 'color'] },
   auto: { ru: 'Авто', en: 'Car', fields: ['brand', 'model', 'color', 'plate'] },
   other: { ru: 'Другое', en: 'Other', fields: [] }
 };
 // предельная длина каждого уточнения
-const THING_TEXT = { size: 20, color: 40, brand: 60, model: 60, material: 60, metal: 40, stones: 80, engraving: 80, plate: 12 };
+const THING_TEXT = { size: 20, color: 40, brand: 60, model: 60, material: 60, metal: 40, stones: 80, engraving: 80, plate: 12, doc_kind: 60, keyring: 80 };
 
 const clean = (v, max) => (typeof v === 'string' || typeof v === 'number' ? String(v).replace(/\s+/g, ' ').trim().slice(0, max) : '');
 

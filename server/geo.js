@@ -34,7 +34,9 @@ function parse(j) {
   let park = '';
   if (j && (j.category === 'leisure' || j.class === 'leisure') && PARK_TYPES.test(j.type || '') && j.name) park = j.name;
   else if (a.park) park = a.park;
-  return { city: String(city).slice(0, 80), address: String(address).slice(0, 200), park: String(park).slice(0, 120) };
+  // страна: код ISO (RU — Россия), чтобы мастер заявки сам отметил «за границей»
+  const country = /^[a-z]{2}$/.test(a.country_code || '') ? a.country_code.toUpperCase() : '';
+  return { city: String(city).slice(0, 80), address: String(address).slice(0, 200), park: String(park).slice(0, 120), country, country_name: String(a.country || '').slice(0, 80) };
 }
 
 async function reverse(lat, lng, lang = 'ru') {

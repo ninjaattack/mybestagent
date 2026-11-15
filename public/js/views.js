@@ -8,6 +8,7 @@ import {
 } from './core.js';
 import { BREEDS, COLORS, parksOf } from './places.js';
 import { pushCard, installCard, meNudge } from './push.js';
+import { tplGrid, applyTemplate, tplHint, tplName, idsBox, idFieldsFor, idName, countryCard, countrySelect, countryOf, countryName, photoMeta, matchSection, bindMatches, meWards, verifyBar, bindVerify } from './smart.js';
 
 /* =================== общие компоненты =================== */
 // Псевдоним собеседника в анонимном чате (сервер отдаёт по-русски, здесь — перевод).
@@ -596,7 +597,7 @@ route('/map', async (view) => {
 
 /* =================== МАСТЕР ЗАЯВКИ =================== */
 // Единые параметры заявки: приметы человека и место события. Значения совпадают со списками на сервере (server/index.js).
-const OPT = {
+export const OPT = {
   sex: { male: ['Мужской', 'Male'], female: ['Женский', 'Female'] },
   build: { thin: ['Худощавое', 'Slim'], normal: ['Среднее', 'Medium'], full: ['Полное', 'Heavy'] },
   hair_color: { blond: ['Светлые', 'Blond'], light_brown: ['Русые', 'Light brown'], brown: ['Каштановые', 'Brown'], black: ['Тёмные, чёрные', 'Dark, black'], red: ['Рыжие', 'Red'], gray: ['Седые', 'Grey'], other: ['Другой цвет', 'Other colour'] },
@@ -621,7 +622,7 @@ const ROUTE = {
   other: [['Какой транспорт', 'What transport'], ['Речной трамвай, канатная дорога', 'River boat, cable car']]
 };
 const DETAIL_KEYS = ['sex', 'height', 'weight', 'build', 'skin', 'hair_color', 'hair_length', 'eye_color', 'nationality', 'clothes_top', 'clothes_bottom', 'headwear', 'shoes',
-  'language', 'health_note', 'disability', 'breed', 'color', 'clothes', 'park', 'landmark', 'transport', 'transport_route', 'place_photo'];
+  'language', 'health_note', 'disability', 'breed', 'color', 'clothes', 'park', 'landmark', 'transport', 'transport_route', 'place_photo', 'template', 'country_name'];
 // Вид животного хранится словом из справочника (на языке интерфейса); подсказки пород привязаны к русскому названию
 const speciesRu = (v) => { const e = (state.config?.dicts?.species || []).find((x) => x.ru === v || x.en === v); return e ? e.ru : v; };
 const PARK_OTHER = '__other';
@@ -630,21 +631,27 @@ const optSelect = (name, cur) => h`<select name="${name}"><option value="">${tr(
 const fld = (label, control) => h`<label class="field"><span>${label}</span>${control}</label>`;
 const txt = (d, name, max, ph = '') => h`<input name="${name}" value="${d[name] ?? ''}" maxlength="${max}" placeholder="${ph}" autocomplete="off">`;
 // Вещи: тип и уточнения к нему (тот же список — в server/things.js). В форме уточнения называются th_<поле>.
-const THING_TYPES = ['clothes', 'accessories', 'jewelry', 'auto', 'other'];
-const THING_FIELDS = { clothes: ['size', 'color', 'brand'], accessories: ['brand', 'color', 'material'], jewelry: ['metal', 'stones', 'engraving'], auto: ['brand', 'model', 'color', 'plate'], other: [] };
-const THING_MAX = { size: 20, color: 40, brand: 60, model: 60, material: 60, metal: 40, stones: 80, engraving: 80, plate: 12 };
-const thingName = (k) => ({ clothes: tr('Одежда', 'Clothing'), accessories: tr('Аксессуары', 'Accessories'), jewelry: tr('Украшения', 'Jewellery'), auto: tr('Авто', 'Car'), other: tr('Другое', 'Other') })[k] || k;
+const THING_TYPES = ['documents', 'electronics', 'keys', 'accessories', 'jewelry', 'clothes', 'bike', 'auto', 'other'];
+const THING_FIELDS = { documents: ['doc_kind', 'color'], electronics: ['brand', 'model', 'color'], keys: ['keyring', 'color'], accessories: ['brand', 'color', 'material'], jewelry: ['metal', 'stones', 'engraving'],
+  clothes: ['size', 'color', 'brand'], bike: ['brand', 'model', 'color'], auto: ['brand', 'model', 'color', 'plate'], other: [] };
+const THING_MAX = { size: 20, color: 40, brand: 60, model: 60, material: 60, metal: 40, stones: 80, engraving: 80, plate: 12, doc_kind: 60, keyring: 80 };
+const thingName = (k) => ({ documents: tr('Документы', 'Documents'), electronics: tr('Телефон, электроника', 'Phone, electronics'), keys: tr('Ключи', 'Keys'), accessories: tr('Сумка, кошелёк, аксессуары', 'Bag, wallet, accessories'),
+  jewelry: tr('Украшения', 'Jewellery'), clothes: tr('Одежда', 'Clothing'), bike: tr('Велосипед, самокат', 'Bicycle, scooter'), auto: tr('Авто', 'Car'), other: tr('Другое', 'Other') })[k] || k;
 const thingLabel = (k, type) => ({
   size: tr('Размер', 'Size'), color: tr('Цвет', 'Colour'), brand: type === 'auto' ? tr('Марка', 'Make') : tr('Бренд', 'Brand'), model: tr('Модель', 'Model'),
-  material: tr('Материал', 'Material'), metal: tr('Металл, проба', 'Metal, hallmark'), stones: tr('Камни, вставки', 'Stones, inlays'), engraving: tr('Гравировка, надпись', 'Engraving'), plate: tr('Госномер', 'Licence plate')
+  material: tr('Материал', 'Material'), metal: tr('Металл, проба', 'Metal, hallmark'), stones: tr('Камни, вставки', 'Stones, inlays'), engraving: tr('Гравировка, надпись', 'Engraving'), plate: tr('Госномер', 'Licence plate'),
+  doc_kind: tr('Какой документ', 'Which document'), keyring: tr('Брелок, сколько ключей', 'Key ring, how many keys')
 })[k] || k;
 const thingHint = (k, type) => ({
-  size: '48, M, 42', color: type === 'auto' ? tr('Серебристый', 'Silver') : tr('Чёрный', 'Black'), brand: type === 'auto' ? 'Kia' : 'Zara', model: 'Rio',
+  size: '48, M, 42', color: type === 'auto' ? tr('Серебристый', 'Silver') : type === 'documents' ? tr('Синяя обложка', 'Blue cover') : tr('Чёрный', 'Black'),
+  brand: { auto: 'Kia', electronics: 'Apple', bike: 'Stels' }[type] || 'Zara', model: { electronics: 'iPhone 13', bike: 'Navigator 500' }[type] || 'Rio',
+  doc_kind: tr('Паспорт, права, СТС', 'Passport, licence'), keyring: tr('Брелок-сова, 3 ключа', 'Owl key ring, 3 keys'),
   material: tr('Кожа, ткань', 'Leather, fabric'), metal: tr('Золото 585', 'Gold 585'), stones: tr('Фианит, жемчуг', 'Zirconia, pearl'), engraving: tr('«Навсегда» внутри кольца', '“Forever” inside the ring'), plate: tr('А123ВС 77', 'A123BC 77')
 })[k] || '';
 const thingTitleHint = (type) => ({
   clothes: tr('Чёрная пуховая куртка', 'Black down jacket'), accessories: tr('Кожаный кошелёк с картами', 'Leather wallet with cards'),
-  jewelry: tr('Золотое обручальное кольцо', 'Gold wedding ring'), auto: tr('Серебристый седан', 'Silver sedan'), other: tr('Связка ключей с брелоком', 'Keys with a key ring')
+  jewelry: tr('Золотое обручальное кольцо', 'Gold wedding ring'), auto: tr('Серебристый седан', 'Silver sedan'), other: tr('Чёрный зонт', 'Black umbrella'),
+  documents: tr('Паспорт в синей обложке', 'Passport in a blue cover'), electronics: tr('Чёрный iPhone в прозрачном чехле', 'Black iPhone in a clear case'), keys: tr('Связка ключей с брелоком', 'Keys with a key ring'), bike: tr('Синий горный велосипед', 'Blue mountain bike')
 })[type] || tr('Чёрный рюкзак с ноутбуком', 'Black backpack with laptop');
 // все уточнения передаются явно: поля другого типа уходят пустыми и не смешиваются с общими параметрами (окрас животного и т. п.)
 const thingDetails = (d) => {
@@ -653,6 +660,24 @@ const thingDetails = (d) => {
   for (const k of Object.keys(THING_MAX)) o[k] = own.includes(k) ? d['th_' + k] || '' : '';
   return o;
 };
+// Заявка из карточки «Мои близкие»: всё, что известно заранее, подставляется в мастер
+function fromWard(d, w) {
+  const dt = w.details || {};
+  Object.assign(d, { ward_id: w.id, photos: [...(w.photos || [])], contact: w.contact || d.contact, features: w.features || '', city: w.home_city || d.city || '' });
+  if (w.places) d.description = tr('Где обычно бывает: ', 'Usual places: ') + w.places;
+  if (w.family) d.family = true;
+  if (w.kind === 'person') {
+    Object.assign(d, { category: 'people', person_name: w.name, sex: w.sex || '', relation: w.relation || '' });
+    if (w.birth_year) d.person_age = new Date().getFullYear() - w.birth_year;
+    for (const k of ['height', 'build', 'hair_color', 'eye_color', 'health_note', 'language']) if (dt[k] != null) d[k] = dt[k];
+    for (const x of dt.health || []) d['h_' + x] = true;
+    d.template = d.person_age != null && d.person_age < 14 ? 'child' : d.person_age >= 65 || (dt.health || []).includes('dementia') ? 'elderly' : 'adult';
+  } else {
+    Object.assign(d, { category: 'animals', species: w.species || '', breed: dt.breed || '', color: dt.color || '', clothes: dt.clothes || '', title: [w.species, w.name].filter(Boolean).join(' ') });
+    for (const [k, v] of Object.entries(w.ids || {})) d['id_' + k] = v;
+    d.template = /соба|dog/i.test(w.species || '') ? 'dog' : /кош|кот|cat/i.test(w.species || '') ? 'cat' : 'pet_other';
+  }
+}
 const localDate = (dt = new Date()) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 async function wizard(view, kind, existing) {
   const edit = !!existing;
@@ -664,6 +689,13 @@ async function wizard(view, kind, existing) {
     d.thing_type = existing.details.thing_type;
     for (const k of THING_FIELDS[d.thing_type]) if (existing.details[k]) d['th_' + k] = existing.details[k];
   }
+  // страна, номера и скрытая примета при редактировании
+  if (existing) { d.abroad = !!existing.country; for (const [k, v] of Object.entries(existing.ids || {})) d['id_' + k] = v; }
+  if (!existing && query().get('template')) applyTemplate(d, query().get('template'));
+  // заявка из карточки «Мои близкие» (#/new/lost?ward=ID) или выбор близкого на первом шаге
+  const wardId = !existing && kind === 'lost' && query().get('ward');
+  if (wardId) { try { fromWard(d, (await GET('/wards/' + wardId)).item); } catch (e) { toastErr(e); } }
+  const wards = !existing && kind === 'lost' && !wardId ? ((await GET('/wards').catch(() => ({ items: [] }))).items || []) : [];
   // у заявки о человеке отдельный шаг «Приметы»
   const stepsFor = () => d.category === 'people' ? ['cat', 'details', 'looks', 'photos', 'place', 'final'] : ['cat', 'details', 'photos', 'place', 'final'];
   let steps = stepsFor();
@@ -715,6 +747,7 @@ async function wizard(view, kind, existing) {
         if (!d.title) return err(d.category === 'things' ? t('wiz.e_thing', 'Напишите, что за вещь', 'Say what the item is') : t('wiz.e_title', 'Заполните заголовок', 'Fill in the title'), 'title');
       }
     }
+    if (s === 'place' && d.abroad && !d.country) return err(tr('Выберите страну', 'Choose the country'), 'country');
     if (s === 'place' && (d.lat == null || d.lat === '')) return err(t('wiz.e_place', 'Отметьте место на карте', 'Mark the place on the map'), '#picker');
     if (s === 'place' && !d.event_date) return err(tr('Укажите дату', 'Enter the date'), 'event_date');
     if (s === 'place' && d.category === 'people' && isLost && !d.address && !d.landmark && !d.transport) return err(t('wiz.e_where', 'Укажите адрес, место или транспорт', 'Enter an address, place or transport'), 'address');
@@ -726,10 +759,6 @@ async function wizard(view, kind, existing) {
     }
     return true;
   }
-  const catPick = (c) => h`<button type="button" class="pick ${d.category === c ? 'on' : ''}" data-cat="${c}">
-    <div class="cat-ic" style="background:${c === 'people' ? 'linear-gradient(145deg,var(--red),var(--red-2))' : c === 'animals' ? 'linear-gradient(145deg,var(--blue),var(--blue-2))' : 'linear-gradient(145deg,#2a2c33,#0e0f13)'}">${icon(CAT[c].icon)}</div>
-    <div><b>${catName(c)}</b><span>${c === 'people' ? tr('Проверка модератором', 'Moderator review') : tr('Публикуется сразу', 'Published instantly')}</span></div></button>`;
-
   // Парк: выпадающий список парков выбранного города; «Другой парк» или город без списка — своё название
   function drawParks() {
     const row = $('#parkRow', view); if (!row) return;
@@ -764,6 +793,7 @@ async function wizard(view, kind, existing) {
         const el = $(`#wform [name=${k}]`, view);
         if (el && r[k] && (!el.value.trim() || el.value === autoFilled[k])) { el.value = r[k]; autoFilled[k] = r[k]; d[k] = r[k]; }
       }
+      autoCountry(r);
       if (d.category === 'animals') {
         const park = $('[name=park]', view);
         if (r.park && park && (!park.value || park.value === autoFilled.park)) { park.value = r.park; autoFilled.park = r.park; }
@@ -772,14 +802,35 @@ async function wizard(view, kind, existing) {
     }, 350);
   }
 
+  // Страна по точке на карте: вне России — сами отмечаем «за границей» (если человек не выбрал страну сам)
+  function showAbroad() {
+    const cb = $('#wform [name=abroad]', view), sel = $('#wform [name=country]', view); if (!cb || !sel) return;
+    $('#abroadBox', view).classList.toggle('hide', !cb.checked);
+    mount($('#ctryCard', view), cb.checked && sel.value ? countryCard(sel.value, d.country_name) : '');
+  }
+  function autoCountry(r) {
+    const cb = $('#wform [name=abroad]', view), sel = $('#wform [name=country]', view); if (!cb || !sel || !r || r.country === undefined) return;
+    if (r.country && r.country !== 'RU') {
+      if (!countryOf(r.country) && !sel.querySelector(`option[value="${r.country}"]`)) sel.insertAdjacentHTML('beforeend', h`<option value="${r.country}">${r.country_name || r.country}</option>`.s);
+      if (!sel.value || sel.value === autoFilled.country) { sel.value = r.country; autoFilled.country = r.country; d.country_name = countryOf(r.country) ? '' : r.country_name || ''; cb.checked = true; }
+      showAbroad();
+    } else if (r.country === 'RU' && autoFilled.country && sel.value === autoFilled.country) { cb.checked = false; sel.value = ''; autoFilled.country = ''; showAbroad(); }
+  }
+
   function draw() {
     const s = steps[step];
     const pct = Math.round(((step + 1) / steps.length) * 100);
     let body;
-    if (s === 'cat') body = h`<h2>${isLost ? t('wiz.q_lost', 'Кого или что вы потеряли?', 'What did you lose?') : t('wiz.q_found', 'Кого или что вы нашли?', 'What did you find?')}</h2><div class="pick-grid" style="margin-top:18px">${['people', 'animals', 'things'].map(catPick)}</div>`;
+    if (s === 'cat') body = h`<h2>${isLost ? t('wiz.q_lost', 'Кого или что вы потеряли?', 'What did you lose?') : t('wiz.q_found', 'Кого или что вы нашли?', 'What did you find?')}</h2>
+      <p class="muted" style="margin-top:8px">${tr('Выберите, что подходит лучше: покажем только нужные поля и подскажем, что важно указать.', 'Pick the closest match: we show only the fields you need and tips on what matters.')}</p>
+      ${wards.length ? h`<div class="ward-pick"><p class="small"><b>${tr('Пропал кто-то из «Моих близких»?', 'Is one of your loved ones missing?')}</b> ${tr('Заявка заполнится из карточки.', 'The report is filled from the card.')}</p>
+        <div class="row-wrap">${wards.map((w) => h`<button type="button" class="ward-chip" data-ward="${w.id}">${w.photos && w.photos[0] ? h`<img src="${w.photos[0]}" alt="">` : icon(w.kind === 'pet' ? 'paw' : 'user')}<span>${w.name}</span></button>`)}</div></div>` : ''}
+      <div style="margin-top:18px">${tplGrid(d)}</div>`;
     if (s === 'details') {
       const c = d.category;
+      const hint = d.template ? tplHint(d.template, kind) : '';
       body = h`<h2>${t('wiz.details', 'Описание', 'Description')}</h2><form id="wform" class="stack" style="margin-top:18px">
+        ${hint ? h`<div class="note note-blue tpl-note">${icon('help')}<div><b>${tplName(d.template)}</b>${hint}</div></div>` : ''}
         ${c === 'people' && isLost ? h`
           <div class="note note-red">${icon('shield')}<div><b>${t('wiz.p_note', 'Заявка о человеке проходит проверку', 'Reports about people are reviewed')}</b>${t('wiz.p_note_t', 'Подаёт родственник или законный представитель (о ребёнке — только представитель). Обязательно позвоните в полицию: 102 или 112.', 'Filed by a relative or legal guardian (for a minor — guardian only). Be sure to call the police: 102 or 112.')}</div></div>
           <label class="field"><span>${t('wiz.fio', 'ФИО', 'Full name')} <em>*</em></span><input name="person_name" value="${d.person_name || ''}" maxlength="120" autocomplete="off"></label>
@@ -810,6 +861,7 @@ async function wizard(view, kind, existing) {
           : h`
           <label class="field"><span>${c === 'animals' ? (isLost ? t('wiz.t_pet', 'Кличка и коротко', 'Name and short description') : t('wiz.t_pet_f', 'Коротко: кого нашли', 'Short: what you found')) : c === 'things' ? t('wiz.t_thing', 'Что за вещь', 'What item') : t('wiz.t_person_f', 'Коротко: кого нашли', 'Short: who you found')} <em>*</em></span><input name="title" value="${d.title || ''}" maxlength="140" placeholder="${c === 'animals' ? tr('Рыжий кот Барсик', 'Ginger cat Barsik') : c === 'things' ? tr('Чёрный рюкзак с ноутбуком', 'Black backpack with laptop') : tr('Пожилой мужчина без документов', 'Elderly man without documents')}"></label>
           ${c !== 'people' ? h`<label class="field"><span>${t('wiz.features', 'Приметы', 'Distinctive features')}</span><textarea name="features" rows="3" maxlength="1000" placeholder="${c === 'animals' ? tr('Порода, окрас, ошейник, чип, клеймо', 'Breed, colour, collar, chip') : tr('Цвет, марка, серийный номер, брелоки', 'Colour, brand, serial number')}">${d.features || ''}</textarea></label>` : ''}`}`}
+        ${idsBox(d, idFieldsFor(c, d.thing_type))}
         <label class="field"><span>${c === 'animals' || c === 'things' ? t('wiz.comments', 'Комментарии', 'Comments') : t('wiz.desc', 'Подробное описание', 'Full description')}</span><textarea name="description" rows="4" maxlength="4000" placeholder="${c === 'animals' ? tr('Характер, на что откликается, как подойти, чем приманить', 'Temper, what it responds to, how to approach') : c === 'things' ? tr('Где и как это случилось, кому передали находку, как её забрать', 'How it happened, who has the item now, how to collect it') : ''}">${d.description || ''}</textarea></label>
       </form>`;
     }
@@ -855,6 +907,11 @@ async function wizard(view, kind, existing) {
           ${fld(t('wiz.date_req', 'Дата *', 'Date *'), h`<input type="date" name="event_date" value="${d.event_date || ''}" max="${localDate()}">`)}
           ${fld(t('wiz.time', 'Время', 'Time'), h`<input type="time" name="event_time" value="${d.event_time || ''}">`)}
         </div>
+        <label class="check abroad-check"><input type="checkbox" name="abroad" ${d.abroad ? 'checked' : ''}> <span>${icon('plane', 'ic-sm')} ${tr('Это произошло за границей', 'It happened abroad')}</span></label>
+        <div id="abroadBox" class="stack ${d.abroad ? '' : 'hide'}">
+          ${fld(tr('Страна *', 'Country *'), countrySelect(d.country))}
+          <div id="ctryCard">${d.abroad && d.country ? countryCard(d.country, d.country_name) : ''}</div>
+        </div>
         <div class="grid-2">
           ${fld(t('wiz.city', 'Город', 'City'), h`<input name="city" value="${d.city || state.user.city || ''}" maxlength="80">`)}
           ${fld(t('wiz.address2', 'Адрес', 'Address'), h`<input name="address" value="${d.address || ''}" maxlength="200" placeholder="${tr('Тверская ул., 7', '7 Tverskaya St')}">`)}
@@ -874,6 +931,8 @@ async function wizard(view, kind, existing) {
       body = h`<h2>${t('wiz.final', 'Связь и публикация', 'Contact & publishing')}</h2><form id="wform" class="stack" style="margin-top:18px">
         <label class="field"><span>${t('wiz.contact', 'Контакт для связи', 'Contact')} <em>*</em></span><input name="contact" value="${d.contact || ''}" maxlength="120" autocomplete="tel" autocapitalize="off">
           <p class="hint">${icon('lock', 'ic-sm')} ${t('wiz.contact_t', 'Контакт видит только модератор. Вам напишут в анонимный чат.', 'Only moderators see it. People will reach you via anonymous chat.')}</p></label>
+        <label class="field"><span>${icon('eyeOff', 'ic-sm')} ${tr('Скрытая примета (необязательно)', 'Hidden detail (optional)')}</span><input name="secret" value="${d.secret || ''}" maxlength="300" autocomplete="off" placeholder="${isLost ? (d.category === 'people' ? tr('Родинка на шее слева, шрам на руке', 'A mole on the left of the neck, a scar on the hand') : tr('Шрам на левой лапе, надпись внутри кольца', 'A scar on the left paw, engraving inside the ring')) : tr('Что лежит внутри, какая заставка на телефоне', 'What is inside, the phone wallpaper')}">
+          <p class="hint">${isLost ? tr('Её не увидит никто, кроме вас. По ней система сверит совпадения и проверит того, кто напишет, что нашёл.', 'Nobody but you sees it. The system uses it to check matches and to verify whoever says they found it.') : tr('Деталь, которую знает только настоящий владелец. Он назовёт её в чате — система сверит, а вы увидите результат.', 'A detail only the real owner knows. They name it in the chat — the system checks it and you see the result.')}</p></label>
         ${isLost ? h`<label class="field"><span>${t('wiz.reward', 'Вознаграждение, ₽ (необязательно)', 'Reward, ₽ (optional)')}</span><input name="reward" type="number" min="0" step="100" inputmode="numeric" value="${d.reward || ''}"><p class="hint">${t('wiz.reward_t', 'Выплачивается вами напрямую, вне платформы.', 'Paid by you directly, outside the platform.')}</p></label>` : ''}
         ${canEm ? h`<div class="card pad" style="padding:16px">
           <label class="row between" style="cursor:pointer"><div class="row">${icon('siren')}<div><b>${t('wiz.em', 'Экстренное оповещение', 'Emergency alert')}</b><div class="xs muted">${t('wiz.em_t', 'Push людям и волонтёрам рядом. Запуск — после проверки модератором.', 'Push to people and volunteers nearby. Starts after moderator review.')}</div></div></div><span class="switch"><input type="checkbox" name="emergency_on" ${d.emergency_on ? 'checked' : ''}></span></label>
@@ -894,7 +953,10 @@ async function wizard(view, kind, existing) {
         ${step > (edit ? 1 : 0) ? h`<button class="btn btn-ghost" id="prev" aria-label="${tr('Назад', 'Back')}">${icon('chevL')}</button>` : ''}
         <button class="btn ${s === 'final' ? 'btn-red' : ''}" id="next">${s === 'final' ? (edit ? t('wiz.save', 'Сохранить изменения', 'Save changes') : t('wiz.publish', 'Опубликовать', 'Publish')) : s === 'photos' && !getPhotos().length ? tr('Пропустить', 'Skip') : tr('Далее', 'Next')}${s === 'final' ? '' : icon('chevR')}</button>
       </div></div>`);
-    if (s === 'cat') $$('[data-cat]', view).forEach((b) => b.onclick = () => { d.category = b.dataset.cat; steps = stepsFor(); step = 1; draw(); });
+    if (s === 'cat') {
+      $$('[data-tpl]', view).forEach((b) => b.onclick = () => { applyTemplate(d, b.dataset.tpl); steps = stepsFor(); step = 1; draw(); });
+      $$('[data-ward]', view).forEach((b) => b.onclick = () => { fromWard(d, wards.find((x) => x.id === +b.dataset.ward)); steps = stepsFor(); step = 1; draw(); });
+    }
     if (s === 'photos') {
       getPhotos = photoField($('#ph', view), d.photos || [], 5);
       // обновлять подпись кнопки при изменении
@@ -914,13 +976,20 @@ async function wizard(view, kind, existing) {
         drawParks();
       }
     }
-    if (s === 'place') { const pk = mapPicker($('#picker', view), d.lat != null && d.lat !== '' ? { lat: +d.lat, lng: +d.lng } : null, (p) => { d.lat = p.lat; d.lng = p.lng; suggestPlace(p); const pe = $('#picker', view); if (pe && pe.classList.contains('has-err')) { pe.classList.remove('has-err'); const fe = $('#ferr-picker', view); if (fe) fe.remove(); } }, { kind, category: d.category }); onLeave(() => pk.map.remove()); }
+    if (s === 'place') {
+      const pk = mapPicker($('#picker', view), d.lat != null && d.lat !== '' ? { lat: +d.lat, lng: +d.lng } : null, (p) => { d.lat = p.lat; d.lng = p.lng; suggestPlace(p); const pe = $('#picker', view); if (pe && pe.classList.contains('has-err')) { pe.classList.remove('has-err'); const fe = $('#ferr-picker', view); if (fe) fe.remove(); } }, { kind, category: d.category });
+      onLeave(() => pk.map.remove());
+      // за границей: выбор страны переносит карту в эту страну (если место ещё не отмечено) и показывает её экстренные номера
+      const cb = $('[name=abroad]', view), cs = $('[name=country]', view);
+      cb.onchange = () => { showAbroad(); if (cb.checked) cs.focus(); };
+      cs.onchange = () => { autoFilled.country = ''; d.country_name = ''; const c = countryOf(cs.value); if (c && (d.lat == null || d.lat === '')) pk.map.setView([c.lat, c.lng], c.zoom); showAbroad(); };
+    }
     if (s === 'details' && d.category === 'animals') {
       const sp = $('[name=species]', view);
       sp.onchange = () => mount($('#breedList', view), (BREEDS[speciesRu(sp.value)] || []).map((v) => h`<option value="${v}">`));
     }
     if (s === 'details' && d.category === 'things') {
-      $$('[name=thing_type]', view).forEach((r) => r.onchange = () => { saveStep(); draw(); const on = $('[name=thing_type]:checked', view); if (on) on.focus({ preventScroll: true }); });
+      $$('[name=thing_type]', view).forEach((r) => r.onchange = () => { saveStep(); d.template = d.thing_type === 'other' ? 'things_other' : d.thing_type; draw(); const on = $('[name=thing_type]:checked', view); if (on) on.focus({ preventScroll: true }); });
     }
     if (s === 'details' && d.category === 'people' && isLost) {
       const upd = () => { const a = $('[name=person_age]', view).value; mount($('#minorNote', view), a !== '' && +a < 18 ? h`<div class="note note-amber">${icon('alert')}<div>${t('wiz.minor', 'Человеку меньше 18 лет: заявку подаёт только законный представитель.', 'Under 18: only a legal guardian can file.')}</div></div>` : ''); };
@@ -942,10 +1011,14 @@ async function wizard(view, kind, existing) {
     };
   }
   async function submit() {
+    // цвета и отпечатки фото считаются в браузере — для подбора совпадений (у заявок о людях не считаем)
+    const meta = d.category !== 'people' && (d.photos || []).length ? await photoMeta(d.photos).catch(() => ({})) : {};
     const body = {
       kind: d.kind, category: d.category, title: d.title, description: d.description, features: d.features, species: d.species,
       person_name: d.person_name, person_age: d.person_age, relation: d.relation, confirm_rights: !!d.confirm_rights,
-      details: Object.assign(Object.fromEntries(DETAIL_KEYS.map((k) => [k, d[k] ?? ''])), { health: Object.keys(OPT.health).filter((x) => d['h_' + x]) }, d.category === 'things' ? thingDetails(d) : {}),
+      details: Object.assign(Object.fromEntries(DETAIL_KEYS.map((k) => [k, d[k] ?? ''])), { health: Object.keys(OPT.health).filter((x) => d['h_' + x]) }, d.category === 'things' ? thingDetails(d) : {}, meta),
+      country: d.abroad ? d.country || '' : '', secret: d.secret || '', ward_id: d.ward_id || null,
+      ids: Object.fromEntries(['chip', 'tattoo', 'serial', 'doc_name'].map((k) => [k, d['id_' + k] || ''])),
       event_date: d.event_date, event_time: d.event_time || '', lat: d.lat, lng: d.lng, address: d.address, city: d.city, contact: d.contact, reward: d.reward,
       photos: d.photos || [], family: !!d.family, emergency_radius: d.emergency_on ? +d.emergency_radius : null
     };
@@ -959,7 +1032,8 @@ async function wizard(view, kind, existing) {
         <p class="muted" style="margin:12px auto 0;max-width:460px">${pending ? t('wiz.ok_pending_t', 'Модератор скоро проверит — пришлём уведомление. Если пропал человек, позвоните в полицию: 102 или 112.', 'A moderator will review it soon — we’ll notify you. If a person is missing, call the police: 102 or 112.') : r.matches ? `${t('wiz.ok_matches', 'Найдено возможных совпадений', 'Possible matches found')}: ${r.matches}` : t('wiz.ok_t', 'Мы сообщим, как только появится похожая заявка.', 'We will notify you as soon as a similar report appears.')}</p>
         ${body.emergency_radius ? h`<p class="chip chip-warn" style="margin-top:14px">${icon('siren')}${t('wiz.ok_em', 'Экстренное оповещение ждёт подтверждения модератора', 'Emergency alert awaits moderator approval')} · ${body.emergency_radius} ${tr('км', 'km')}</p>` : ''}
         ${pending && d.category === 'people' ? h`<div class="row" style="justify-content:center;margin-top:18px"><a class="btn btn-red btn-urgent" href="tel:112">${icon('phone')}112</a><a class="btn" href="tel:102">${icon('phone')}102</a></div>` : ''}
-        <div class="row" style="justify-content:center;margin-top:22px;flex-wrap:wrap"><a class="btn btn-ghost" href="#/a/${r.item.id}">${t('wiz.open', 'Открыть заявку', 'Open report')}</a><a class="btn btn-ghost" href="#/me/apps">${t('wiz.my', 'Мои заявки', 'My reports')}</a></div>
+        ${body.country && isLost ? h`<div style="max-width:560px;margin:20px auto 0;text-align:left">${countryCard(body.country, d.country_name)}</div>` : ''}
+        <div class="row" style="justify-content:center;margin-top:22px;flex-wrap:wrap"><a class="btn btn-ghost" href="#/a/${r.item.id}">${t('wiz.open', 'Открыть заявку', 'Open report')}</a>${!pending ? h`<a class="btn btn-ghost" href="#/a/${r.item.id}/poster">${icon('printer')}${tr('Листовка для печати', 'Printable poster')}</a>` : ''}<a class="btn btn-ghost" href="${d.ward_id ? '#/ward/' + d.ward_id : '#/me/apps'}">${d.ward_id ? tr('К карточке близкого', 'Back to the card') : t('wiz.my', 'Мои заявки', 'My reports')}</a></div>
       </div></div>`);
     } catch (e) { toastErr(e); }
   }
@@ -1032,11 +1106,13 @@ route('/a/:id', async (view, p) => {
             <span class="chip chip-${a.kind}">${kindName(a.kind)}</span><span class="chip">${icon(CAT[a.category].icon)}${catName(a.category)}</span>
             <span class="chip ${statusChip(a.status)}">${statusName(a.status)}</span>
             ${a.promoted ? h`<span class="chip">${icon('zap')}${t('card.top', 'Топ', 'Top')}</span>` : ''}
+            ${a.country ? h`<span class="chip">${icon('plane')}${countryName(a.country, dt.country_name)}</span>` : ''}
           </div>
           <h1 style="font-size:clamp(24px,4vw,38px);margin-top:14px">${a.title}</h1>
         </div>
         ${a.hidden_pd ? h`<div class="note note-blue">${icon('shield')}<div><b>${t('a.hidden', 'Человек найден', 'Person found')}</b>${t('a.hidden_t', 'Личные данные скрыты. Спасибо всем, кто помогал!', 'Personal data is hidden. Thanks to everyone who helped!')}</div></div>` : ''}
-        ${a.category === 'people' && a.status === 'published' ? h`<div class="police">${icon('siren', 'ic-lg')}<div class="grow"><b>${t('a.police', 'Сообщите в полицию', 'Call the police')}</b><div class="xs" style="opacity:.7">${t('a.police_t', 'Платформа не заменяет полицию', 'We don’t replace the police')}</div></div><a href="tel:102" aria-label="${tr('Позвонить 102', 'Call 102')}">102</a><a href="tel:112" aria-label="${tr('Позвонить 112', 'Call 112')}">112</a></div>` : ''}
+        ${a.country && (owner || a.category === 'people') && a.status !== 'rejected' ? countryCard(a.country, dt.country_name) : ''}
+        ${a.category === 'people' && a.status === 'published' && !a.country ? h`<div class="police">${icon('siren', 'ic-lg')}<div class="grow"><b>${t('a.police', 'Сообщите в полицию', 'Call the police')}</b><div class="xs" style="opacity:.7">${t('a.police_t', 'Платформа не заменяет полицию', 'We don’t replace the police')}</div></div><a href="tel:102" aria-label="${tr('Позвонить 102', 'Call 102')}">102</a><a href="tel:112" aria-label="${tr('Позвонить 112', 'Call 112')}">112</a></div>` : ''}
         ${a.reward ? h`<div class="reward">${icon('gift', 'ic-lg')}<div class="grow"><div class="xs muted" style="font-weight:700">${t('a.reward', 'Вознаграждение', 'Reward')}</div><b>${money(a.reward)}</b></div><span class="xs muted" style="max-width:130px;text-align:right">${t('a.reward_t', 'Платит автор заявки', 'Paid by the author')}</span></div>` : ''}
       </div>
       <div class="stack-lg d-rest">
@@ -1046,16 +1122,22 @@ route('/a/:id', async (view, p) => {
         ${looks.length ? h`<div><h3 style="font-size:15px;margin-bottom:8px">${t('wiz.looks', 'Приметы', 'Appearance')}</h3><div class="card pad"><dl class="kv" id="looks">${looks.map(([k, v]) => h`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl></div></div>` : ''}
         ${a.lat != null ? h`<div class="mini-map" id="mm"></div>` : ''}
         ${dt.place_photo ? h`<div><h3 style="font-size:15px;margin-bottom:8px">${t('a.place_photo', 'Фото места', 'Photo of the place')}</h3><img class="place-photo" src="${dt.place_photo}" alt="${t('a.place_photo', 'Фото места', 'Photo of the place')}" data-zoom="${dt.place_photo}" tabindex="0" role="button" loading="lazy"></div>` : ''}
-        ${owner && a.matches ? h`<div><div class="sec-head" style="margin-bottom:12px"><h3>${t('a.matches', 'Возможные совпадения', 'Possible matches')}</h3><span class="chip">${a.matches.length}</span></div>
-          ${a.matches.length ? h`<div class="apps">${a.matches.map((m, i) => appCard(m, i, { score: m.score }))}</div>` : empty('match', t('a.no_matches', 'Совпадений пока нет', 'No matches yet'), t('a.no_matches_t', 'Сообщим, как только появится похожая.', 'We’ll notify you when one appears.'))}</div>` : ''}
+        ${owner && (a.secret || Object.values(a.ids || {}).some(Boolean)) ? h`<div class="private-box"><p class="private-h">${icon('eyeOff', 'ic-sm')}<b>${tr('Видите только вы', 'Only you see this')}</b></p>
+          <dl class="kv">${Object.entries(a.ids || {}).filter(([, v]) => v).map(([k, v]) => h`<div><dt>${idName(k)}</dt><dd>${v}</dd></div>`)}${a.secret ? h`<div><dt>${tr('Скрытая примета', 'Hidden detail')}</dt><dd>${a.secret}</dd></div>` : ''}</dl>
+          <p class="hint">${tr('Номера сверяются с другими заявками автоматически, но не показываются посторонним.', 'Numbers are checked against other reports automatically but never shown to others.')}</p></div>` : ''}
+        ${!owner && a.kind === 'lost' && (a.has_ids || []).includes('chip') ? h`<div class="note note-blue">${icon('paw')}<div><b>${tr('У питомца есть чип', 'The pet is microchipped')}</b>${tr('Если нашли похожего — любая ветклиника бесплатно считает номер чипа. Укажите его в заявке «Нашёл»: система сама сверит номер.', 'If you found a similar pet, any vet clinic reads the chip for free. Add the number to a “Found” report and the system checks it.')}</div></div>` : ''}
+        ${!owner && a.kind === 'lost' && (a.has_ids || []).some((k) => k === 'serial' || k === 'doc_name') ? h`<div class="note note-blue">${icon('shield')}<div><b>${tr('Владелец указал номер или ФИО', 'The owner added a number or name')}</b>${tr('Нашли такую вещь? Подайте заявку «Нашёл» с IMEI, серийным номером или ФИО из документа — совпадение найдётся автоматически.', 'Found it? File a “Found” report with the IMEI, serial number or document name — the match is found automatically.')}</div></div>` : ''}
+        ${matchSection(a)}
       </div>
       <aside class="stack d-side">
         ${owner ? ownerPanel(a) : visitorPanel(a)}
+        ${a.status === 'published' ? h`<a class="aside-link" href="#/a/${a.id}/poster">${icon('printer')}<span class="grow"><b>${tr('Распечатать листовку', 'Print a poster')}</b><small>${tr('С фото и QR-кодом на эту заявку', 'With a photo and a QR code to this report')}</small></span>${icon('chevR', 'ic-sm')}</a>` : ''}
         ${!owner && a.category === 'people' && a.status !== 'pending' ? h`<button type="button" class="aside-link" id="delReq">${icon('shield')}<span class="grow"><b>${t('a.del_req_q', 'Эта заявка о вас?', 'Is this report about you?')}</b><small>${t('a.del_req_s', 'Попросить снять с публикации', 'Ask to take it down')}</small></span>${icon('chevR', 'ic-sm')}</button>` : ''}
         <div id="near"></div>
       </aside>
     </div></div>`);
 
+  bindMatches(view, a);
   const track = $('.track', view);
   if (track) {
     track.onscroll = () => { const i = Math.round(track.scrollLeft / track.clientWidth); $$('.dots i', view).forEach((d, k) => d.classList.toggle('on', k === i)); };
@@ -1279,6 +1361,7 @@ async function chatPane(el, id, onChange) {
       <a class="chat-title" href="#/a/${chat.application.id}" title="${tr('Открыть заявку', 'Open report')}"><b>${aliasOf(chat)}</b><span>${chat.application.title}</span></a>
       ${mod ? '' : h`<button type="button" class="icon-btn" id="menu" aria-label="${tr('Действия с перепиской', 'Conversation actions')}" aria-haspopup="dialog">${icon('more')}</button>`}
     </div>
+    <div id="vbar">${verifyBar(chat)}</div>
     <div class="msgs" id="msgs" tabindex="0" role="log" aria-live="polite" aria-label="${t('chat.msgs', 'Сообщения', 'Messages')}">
       <div class="chat-warn">${icon('shield', 'ic-sm')}<span>${t('chat.fraud', 'Не платите заранее и не называйте коды из SMS. Встречайтесь в людных местах. Модераторы не просят денег в чате.', 'Don’t pay in advance or share SMS codes. Meet in public places. Moderators never ask for money in chat.')}</span></div>
     </div>
@@ -1306,7 +1389,7 @@ async function chatPane(el, id, onChange) {
     const rd = !m.pending && (m.read || (m.id && m.id <= readUpTo));
     return h`<span class="tick ${rd ? 'read' : ''}" title="${m.pending ? tr('Отправляется', 'Sending') : rd ? tr('Прочитано', 'Read') : tr('Доставлено', 'Delivered')}">${m.pending ? icon('clock') : raw(rd ? TICK2 : TICK1)}</span>`;
   };
-  const bubble = (m, cont) => h`<div class="msg ${m.mine ? 'mine' : ''} ${cont ? 'cont' : ''} ${m.pending ? 'pending' : ''} ${m.photo && !m.text ? 'photo-only' : ''}">${m.photo ? h`<img src="${m.photo}" alt="${tr('Фото', 'Photo')}" data-zoom="${m.photo}">` : ''}${m.lat != null ? h`<a class="loc" href="#" data-lat="${m.lat}" data-lng="${m.lng}">${icon('pin')}<span>${tr('Точка на карте', 'Location on map')}</span></a>` : ''}${m.text ? h`<span class="msg-text">${m.text}</span>` : ''}<span class="msg-meta"><time>${timeOf(m.created_at)}</time>${tick(m)}</span></div>`;
+  const bubble = (m, cont) => h`<div class="msg ${m.mine ? 'mine' : ''} ${cont ? 'cont' : ''} ${m.pending ? 'pending' : ''} ${m.photo && !m.text ? 'photo-only' : ''}">${m.photo ? h`<img src="${m.photo}" alt="${tr('Фото', 'Photo')}" data-zoom="${m.photo}">` : ''}${m.lat != null ? h`<a class="loc" href="#" data-lat="${m.lat}" data-lng="${m.lng}">${icon('pin')}<span>${tr('Точка на карте', 'Location on map')}</span></a>` : ''}${m.meta === 'verify_ok' || m.meta === 'verify_fail' ? h`<span class="msg-verify ${m.meta === 'verify_ok' ? 'ok' : 'warn'}">${icon(m.meta === 'verify_ok' ? 'check' : 'x', 'ic-sm')}${m.meta === 'verify_ok' ? tr('Скрытая примета совпала', 'Hidden detail matches') : tr('Скрытая примета не совпала', 'Hidden detail does not match')}</span>` : ''}${m.text ? h`<span class="msg-text">${m.text}</span>` : ''}<span class="msg-meta"><time>${timeOf(m.created_at)}</time>${tick(m)}</span></div>`;
   let lastDay = '', lastMsg = null;
   const bindMsg = (x) => {
     $$('[data-zoom]', x).forEach((i) => { i.onclick = () => lightbox(i.dataset.zoom); i.addEventListener('load', () => { if (box.scrollHeight - box.scrollTop - box.clientHeight < 420) toBottom(); }); });
@@ -1327,6 +1410,9 @@ async function chatPane(el, id, onChange) {
   if (!messages.length) box.insertAdjacentHTML('beforeend', h`<div class="chat-empty">${icon('lock')}<b>${t('chat.start', 'Начните переписку', 'Start the conversation')}</b><span>${t('chat.start_t', 'Спросите о деталях, которые знает только владелец. Контакты скрыты.', 'Ask about details only the owner would know. Contacts stay hidden.')}</span></div>`.s);
   messages.forEach((m) => append(m, true));
   requestAnimationFrame(() => toBottom());
+  // плашка проверки скрытой приметы: обновляется после ответа и когда собеседник проходит проверку
+  const vbar = () => { mount($('#vbar', el), verifyBar(chat)); bindVerify(el, chat, (m) => { append(m); vbar(); }); };
+  vbar();
   const post = async (payload, tmp) => {
     try {
       const r = await POST(`/chats/${chat.id}/messages`, payload);
@@ -1376,6 +1462,7 @@ async function chatPane(el, id, onChange) {
   onLeave(onEvent((type, d) => {
     if (type === 'message' && d.chat_id === chat.id) {
       append(d);
+      if (chat.verify && (d.meta === 'verify_ok' || d.meta === 'verify_fail')) { chat.verify.tries++; if (d.meta === 'verify_ok') chat.verify.ok = true; vbar(); }
       if (!d.mine) GET('/chats/' + chat.id).then(() => { refreshMe().catch(() => {}); onChange(); }).catch(() => {});
     }
     // собеседник прочитал — галочки становятся двойными
@@ -1387,7 +1474,7 @@ async function chatPane(el, id, onChange) {
 }
 
 /* =================== УВЕДОМЛЕНИЯ =================== */
-const NIC = { match: 'match', emergency: 'siren', chat: 'chat', moderation: 'shield', status: 'check', points: 'award', payment: 'card', family: 'users', support: 'help', role: 'handshake', registry: 'gem' };
+const NIC = { match: 'match', emergency: 'siren', chat: 'chat', moderation: 'shield', status: 'check', points: 'award', payment: 'card', family: 'users', ward: 'qr', support: 'help', role: 'handshake', registry: 'gem' };
 route('/notifications', async (view) => {
   const { items } = await GET('/notifications');
   mount(view, h`<div class="wrap" style="max-width:760px"><div class="page-head"><h1>${t('n.title', 'Уведомления', 'Notifications')}</h1></div>
@@ -1405,7 +1492,7 @@ const ME_GROUPS = () => {
   return [
     ['', [['/me', 'dash', t('me.overview', 'Обзор', 'Overview')], ['/me/apps', 'file', t('me.apps', 'Мои заявки', 'My reports')], ['/me/saved', 'bookmark', t('me.saved', 'Сохранённые', 'Saved')]]],
     [tr('Общение', 'Messages'), [['/chats', 'chat', t('chats.title', 'Сообщения', 'Messages'), u.unreadChats], ['/notifications', 'bell', t('n.title', 'Уведомления', 'Notifications'), u.unread], ['/support', 'help', t('sup.title', 'Поддержка', 'Support')]]],
-    [tr('Безопасность', 'Safety'), [['/me/zone', 'zone', t('me.zone', 'Зона оповещений', 'Alert zone')], ['/me/family', 'users', t('me.family', 'Семья', 'Family')], ['/me/registry', 'gem', t('me.registry', 'Реестр ценностей', 'Valuables')]]],
+    [tr('Безопасность', 'Safety'), [['/me/zone', 'zone', t('me.zone', 'Зона оповещений', 'Alert zone')], ['/me/wards', 'heart', tr('Мои близкие', 'My loved ones')], ['/me/family', 'users', t('me.family', 'Семья', 'Family')], ['/me/registry', 'gem', t('me.registry', 'Реестр ценностей', 'Valuables')]]],
     [tr('Аккаунт', 'Account'), [['/me/profile', 'idcard', t('me.profile', 'Профиль', 'Profile')], ['/me/rewards', 'award', t('me.rewards', 'Баллы и статус', 'Points & status')], ['/me/payments', 'card', t('me.payments', 'Платежи', 'Payments')], ['/me/settings', 'settings', t('me.settings', 'Настройки', 'Settings')]]]
   ];
 };
@@ -1440,7 +1527,7 @@ route('/me', (view) => meView(view, ''), { auth: true });
 route('/me/:tab', (view, p) => meView(view, p.tab), { auth: true });
 async function meView(el, tab) {
   await refreshMe();
-  const fn = { '': meOverview, apps: meApps, saved: meSaved, profile: meProfile, zone: meZone, family: meFamily, registry: meRegistry, payments: mePayments, rewards: meRewards, settings: meSettings }[tab];
+  const fn = { '': meOverview, apps: meApps, saved: meSaved, profile: meProfile, zone: meZone, family: meFamily, wards: meWards, registry: meRegistry, payments: mePayments, rewards: meRewards, settings: meSettings }[tab];
   if (!fn) throw Object.assign(new Error(tr('Раздел не найден', 'Section not found')), { status: 404 });
   await fn(el, state.user);
   observeReveal(el);
@@ -1891,10 +1978,10 @@ route('/tariffs', async (view) => {
   const { items, discount } = await GET('/tariffs');
   const promoteId = query().get('promote');
   mount(view, h`<div class="wrap"><div class="page-head center" style="margin:0 auto;max-width:720px"><span class="eyebrow">${t('tar.eyebrow', 'Тарифы', 'Plans')}</span><h1 style="margin-top:12px">${t('tar.title2', 'Больше возможностей для поиска', 'More tools for searching')}</h1>
-    <p style="margin-left:auto;margin-right:auto">${t('tar.sub', 'Заявки, совпадения, оповещения и чат — бесплатно. Платно — расширенный реестр, продвижение и тариф для организаций.', 'Reports, matches, alerts and chat are free. Paid: extended registry, boosting and a plan for organisations.')}</p>
+    <p style="margin-left:auto;margin-right:auto">${t('tar.sub', 'Заявки, совпадения, оповещения и чат — бесплатно. Платно — расширенный поиск совпадений, расширенный реестр, продвижение и тариф для организаций.', 'Reports, matches, alerts and chat are free. Paid: extended match search, extended registry, boosting and a plan for organisations.')}</p>
     ${discount ? h`<span class="chip chip-ok" style="margin-top:14px">${icon('award')}${tr('Ваша скидка по статусу', 'Your status discount')}: ${discount}%</span>` : ''}</div>
     <div class="plans">${items.map((p, i) => h`<div class="plan rise ${p.feature === 'promote' ? 'hl' : ''}" style="--i:${i}">
-      <span class="chip ${p.feature === 'promote' ? 'chip-em' : ''}" style="align-self:flex-start">${icon(p.feature === 'registry' ? 'gem' : p.feature === 'promote' ? 'zap' : 'users')}${p.audience === 'partner' ? tr('Для организаций', 'For organisations') : tr('Для пользователей', 'For users')}</span>
+      <span class="chip ${p.feature === 'promote' ? 'chip-em' : ''}" style="align-self:flex-start">${icon(p.feature === 'registry' ? 'gem' : p.feature === 'promote' ? 'zap' : p.feature === 'search_plus' ? 'match' : 'users')}${p.audience === 'partner' ? tr('Для организаций', 'For organisations') : tr('Для пользователей', 'For users')}</span>
       <h3 style="font-size:22px">${state.lang === 'en' ? p.name_en : p.name_ru}</h3>
       <p class="muted">${state.lang === 'en' ? p.desc_en : p.desc_ru}</p>
       <div class="price">${money(p.final_price)}${p.final_price !== p.price ? h`<s>${money(p.price)}</s>` : ''} <small>/ ${p.period_days} ${tr(plural(p.period_days, 'день', 'дня', 'дней'), 'days')}</small></div>

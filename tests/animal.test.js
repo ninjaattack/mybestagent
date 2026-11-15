@@ -138,7 +138,7 @@ describe('Подсказка места по точке на карте', () => 
     const before = geoHits.length;
     const r = await b.get('/api/geo/reverse?lat=56.84071&lng=60.61512');
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body, { city: 'Екатеринбург', address: 'улица Карла Либкнехта, 44', park: 'Харитоновский сад' });
+    assert.deepEqual(r.body, { city: 'Екатеринбург', address: 'улица Карла Либкнехта, 44', park: 'Харитоновский сад', country: '', country_name: '' });
     assert.equal(geoHits.length, before + 1);
     assert.match(geoHits.at(-1).ua, /^MyBestAgent\//, 'свой User-Agent по правилам Nominatim');
     assert.equal(geoHits.at(-1).lang, 'ru');

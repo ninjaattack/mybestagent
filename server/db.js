@@ -290,6 +290,56 @@ if (ver < 5) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
+if (ver < 6) {
+  // v6: умный подбор без ИИ и новые разделы.
+  //  • заявки: страна (за границей), связь с карточкой близкого, скрытая примета и уникальные номера (видит только автор);
+  //  • совпадения: причины, отметки «Это оно / Не то» с обеих сторон, уровень уведомления;
+  //  • «Мои близкие» (карточки подопечных с QR-кодом) и сообщения нашедших по QR;
+  //  • отметки «реестр ценностей ↔ находка», чтобы не уведомлять дважды;
+  //  • сообщения чата: служебная отметка (проверка скрытой приметы);
+  //  • тариф «Расширенный поиск».
+  db.exec('BEGIN');
+  try {
+    const add = (table, col, def) => { if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); };
+    add('applications', 'country', "TEXT NOT NULL DEFAULT ''");
+    add('applications', 'ward_id', 'INTEGER');
+    add('applications', 'secret', "TEXT NOT NULL DEFAULT ''");
+    add('applications', 'ids', "TEXT NOT NULL DEFAULT '{}'");
+    add('matches', 'reasons', "TEXT NOT NULL DEFAULT '[]'");
+    add('matches', 'lost_vote', "TEXT NOT NULL DEFAULT ''");
+    add('matches', 'found_vote', "TEXT NOT NULL DEFAULT ''");
+    add('matches', 'notified', 'INTEGER NOT NULL DEFAULT 2');
+    add('matches', 'updated_at', "TEXT NOT NULL DEFAULT ''");
+    add('messages', 'meta', "TEXT NOT NULL DEFAULT ''");
+    db.exec(`CREATE TABLE IF NOT EXISTS wards (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, family_id INTEGER,
+      kind TEXT NOT NULL CHECK (kind IN ('person','pet')), name TEXT NOT NULL, relation TEXT NOT NULL DEFAULT '',
+      birth_year INTEGER, sex TEXT NOT NULL DEFAULT '', species TEXT NOT NULL DEFAULT '',
+      details TEXT NOT NULL DEFAULT '{}', ids TEXT NOT NULL DEFAULT '{}', features TEXT NOT NULL DEFAULT '', photos TEXT NOT NULL DEFAULT '[]',
+      home_city TEXT NOT NULL DEFAULT '', places TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '',
+      qr_token TEXT UNIQUE NOT NULL, qr_on INTEGER NOT NULL DEFAULT 1, qr_photo INTEGER NOT NULL DEFAULT 0, qr_phone INTEGER NOT NULL DEFAULT 0,
+      qr_note TEXT NOT NULL DEFAULT '', consent_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_wards_user ON wards(user_id);
+    CREATE TABLE IF NOT EXISTS ward_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ward_id INTEGER NOT NULL REFERENCES wards(id) ON DELETE CASCADE,
+      message TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '', lat REAL, lng REAL, ip TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS registry_hits (valuable_id INTEGER NOT NULL, application_id INTEGER NOT NULL, PRIMARY KEY(valuable_id, application_id));`);
+    if (db.prepare('SELECT COUNT(*) c FROM tariffs').get().c > 0 && !db.prepare("SELECT 1 FROM tariffs WHERE code = 'search_plus'").get()) {
+      db.prepare('INSERT INTO tariffs (code, name_ru, name_en, desc_ru, desc_en, audience, price, period_days, feature, sort) VALUES (?,?,?,?,?,?,?,?,?,?)').run(
+        'search_plus', 'Расширенный поиск', 'Extended search',
+        'Показываем и «возможные» совпадения по вашим заявкам о животных и вещах — с меньшим числом общих примет и дальше обычного радиуса; уведомляем о них сразу',
+        'Also shows “possible” matches for your pet and item reports — with fewer shared details and beyond the usual radius; notifies you right away',
+        'user', 249, 30, 'search_plus', 2);
+    }
+    db.exec('PRAGMA user_version = 6;');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
 // Хелперы для запросов
 function all(sql, ...p) { return db.prepare(sql).all(...p); }
 function get(sql, ...p) { return db.prepare(sql).get(...p); }

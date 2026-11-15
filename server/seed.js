@@ -30,6 +30,7 @@ function seedBase() {
       'INSERT INTO tariffs (code, name_ru, name_en, desc_ru, desc_en, audience, price, period_days, feature, sort) VALUES (?,?,?,?,?,?,?,?,?,?)',
       code, nr, ne, dr, de, aud, price, days, feature, sort);
     T('registry_plus', 'Реестр ценностей+', 'Valuables Registry+', 'До 100 предметов в реестре, приоритетная проверка', 'Up to 100 items in the registry, priority checks', 'user', 299, 30, 'registry', 1);
+    T('search_plus', 'Расширенный поиск', 'Extended search', 'Показываем и «возможные» совпадения по вашим заявкам о животных и вещах — с меньшим числом общих примет и дальше обычного радиуса; уведомляем о них сразу', 'Also shows “possible” matches for your pet and item reports — with fewer shared details and beyond the usual radius; notifies you right away', 'user', 249, 30, 'search_plus', 2);
     T('promote', 'Продвижение заявки', 'Boost a report', 'Заявка выше в списках и на карте 7 дней', 'Report pinned higher in lists and on the map for 7 days', 'user', 199, 7, 'promote', 2);
     T('partner', 'Партнёр', 'Partner', 'Профиль организации, оповещения по зоне, значок партнёра', 'Organisation profile, zone alerts, partner badge', 'partner', 2990, 30, 'partner', 3);
 
