@@ -88,7 +88,11 @@ export async function api(method, url, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const er = new Error(data.message || tr('Ошибка запроса', 'Request failed')); er.code = data.error; er.status = res.status;
-    if (res.status === 401 && state.user) { state.user = null; renderChrome(); }
+    if (res.status === 401 && state.user) {
+      // сессия завершена (выход в другой вкладке, срок истёк): личные данные с экрана убираем, ведём ко входу и возвращаем обратно
+      state.user = null; renderChrome();
+      if (!/^#\/login/.test(location.hash)) go('#/login?next=' + encodeURIComponent(location.hash || '#/me'));
+    }
     throw er;
   }
   return data;
@@ -99,7 +103,7 @@ export const PATCH = (u, b = {}) => api('PATCH', u, b);
 export const DEL = (u) => api('DELETE', u);
 
 export async function refreshMe() {
-  const r = await GET('/me'); state.user = r.user; renderChrome(); appBadge(r.user ? r.user.unread : 0); return r.user;
+  const r = await GET('/me'); state.user = r.user; state.meAt = Date.now(); renderChrome(); appBadge(r.user ? r.user.unread : 0); return r.user;
 }
 
 /* ---------- роутер ---------- */
@@ -114,8 +118,18 @@ export function go(hash) { if (location.hash === hash) handleRoute(); else locat
 export const currentPath = () => (location.hash.replace(/^#/, '') || '/').split('?')[0].split('#')[0].replace(/(.)\/+$/, '$1');
 export const query = () => new URLSearchParams(location.hash.split('?')[1] || '');
 let rendering = 0;
+// Разделы, чей код грузится при первом заходе (админка гостям и обычным пользователям не нужна)
+const lazy = [];
+export function lazyRoutes(prefix, load) { lazy.push({ prefix, load, p: null }); }
+// Страницы без карты — для них Leaflet не грузим (остальным он подгружается до отрисовки)
+const NO_MAP = /^\/($|notifications|registry|tariffs|pay\/|community|support|login|legal|404|w\/|me$|ward\/[^/]+\/print|a\/[^/]+\/poster|admin(?!\/emergency))/;
 export async function handleRoute() {
   const path = currentPath();
+  const lz = lazy.find((x) => path === x.prefix || path.startsWith(x.prefix + '/'));
+  if (lz) {
+    try { await (lz.p ||= lz.load()); } catch (e) { lz.p = null; toastErr(new Error(tr('Не удалось загрузить раздел — проверьте соединение', 'Could not load the section — check your connection'))); }
+    if (currentPath() !== path) return; // пока грузился код, адрес сменился — страницу нарисует следующий вызов
+  }
   leaveFns.forEach((f) => { try { f(); } catch (e) { /* noop */ } }); leaveFns = [];
   document.body.classList.remove('map-open');
   closeAllSheets();
@@ -132,14 +146,19 @@ export async function handleRoute() {
   const id = ++rendering;
   document.body.dataset.route = path.split('/')[1] || 'home';
   renderChrome();
+  if (!NO_MAP.test(path)) { await loadLeaflet().catch(() => {}); if (id !== rendering) return; } // без сети карта сама покажет ошибку
   const run = async () => {
     view.className = 'view' + (r.opts.full ? ' full' : '');
     view.innerHTML = '';
-    const target = (!r.opts.full && !r.opts.notFound && shellFn && shellFn(view, path)) || view;
+    // У каждой отрисовки свой контейнер: если ответ прошлой страницы придёт после перехода, он запишется
+    // в уже отсоединённый узел и не затрёт открытую страницу (display:contents — раскладка не меняется)
+    const box = document.createElement('div'); box.style.display = 'contents'; view.appendChild(box);
+    const target = (!r.opts.full && !r.opts.notFound && shellFn && shellFn(box, path)) || box;
     try { await r.handler(target, params); } catch (e) {
       if (id !== rendering) return;
       if (e.status === 404) document.title = `${tr('Не найдено', 'Not found')} — ${tr('Мой лучший агент', 'My Best Agent')}`;
-      mount(target, h`<div class="wrap"><div class="empty" style="margin-top:40px">${icon('alert')}<b>${e.status === 404 ? tr('Не найдено', 'Not found') : tr('Что-то пошло не так', 'Something went wrong')}</b>${e.message}<div style="margin-top:16px"><a class="btn btn-ghost btn-sm" href="#/">${tr('На главную', 'Home')}</a></div></div></div>`);
+      const head = e.status === 404 ? tr('Не найдено', 'Not found') : e.status === 403 ? tr('Нет доступа', 'No access') : tr('Что-то пошло не так', 'Something went wrong');
+      mount(target, h`<div class="wrap"><div class="empty" style="margin-top:40px">${icon(e.status === 403 ? 'lock' : 'alert')}<b>${head}</b>${e.message}<div style="margin-top:16px">${e.back ? h`<a class="btn btn-ghost btn-sm" href="${e.back}">${tr('К заявке', 'To the report')}</a>` : h`<a class="btn btn-ghost btn-sm" href="#/">${tr('На главную', 'Home')}</a>`}</div></div></div>`);
     }
     if (!r.opts.keepScroll) window.scrollTo({ top: 0, behavior: 'instant' });
     observeReveal(view);
@@ -176,7 +195,7 @@ export function toast(msg, type = 'ok', sub = '', onClick) {
   box.appendChild(el);
   setTimeout(close, type === 'err' ? 5200 : 3800);
 }
-export const toastErr = (e) => toast(e.message || String(e), 'err');
+export const toastErr = (e) => toast((e && e.message) || (typeof e === 'string' ? e : tr('Что-то пошло не так. Попробуйте ещё раз', 'Something went wrong. Please try again')), 'err');
 
 /* ---------- нижние листы / модальные окна ---------- */
 const sheets = new Set();
@@ -346,7 +365,7 @@ export async function compress(file, max = 1600) {
   if (!/^image\//.test(file.type)) throw new Error(tr('Это не изображение', 'Not an image'));
   let bmp;
   try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {
-    bmp = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+    bmp = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error(tr('Не удалось прочитать фото. Сохраните его в JPEG или PNG и попробуйте снова', 'Cannot read the photo. Save it as JPEG or PNG and try again'))); i.src = URL.createObjectURL(file); });
   }
   const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
@@ -392,8 +411,19 @@ function guardLeaflet(L) {
     if (typeof orig === 'function') P[fn] = function (...args) { return this._mapPane ? orig.apply(this, args) : this; };
   }
 }
+// Leaflet подгружается только для страниц с картой (главной, документам, тарифам и т. п. он не нужен).
+// Стили вставляются перед app.css — порядок каскада как раньше, когда они стояли в <head>
+let leafletP = null;
+export function loadLeaflet() {
+  if (window.L && window.L.map) return Promise.resolve();
+  return (leafletP ||= Promise.all([
+    new Promise((res, rej) => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '/vendor/leaflet.css'; l.onload = res; l.onerror = rej; document.head.insertBefore(l, document.querySelector('link[href="/css/app.css"]')); }),
+    new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/vendor/leaflet.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); })
+  ]).catch(() => { leafletP = null; throw new Error(tr('Не удалось загрузить карту — проверьте соединение', 'Could not load the map — check your connection')); }));
+}
 // Карта: m.lib — её библиотека (метки, круги, группы)
 export function makeMap(el, { center, zoom = 12, interactive = true } = {}) {
+  if (!window.L) throw new Error(tr('Не удалось загрузить карту — проверьте соединение', 'Could not load the map — check your connection'));
   guardLeaflet(window.L);
   const c = center || state.config?.map?.center || [55.7558, 37.6173];
   const m = window.L.map(el, { zoomControl: interactive, attributionControl: false, dragging: interactive, scrollWheelZoom: interactive, doubleClickZoom: interactive, touchZoom: interactive, keyboard: interactive, tap: interactive }).setView(c, zoom);

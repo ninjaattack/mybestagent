@@ -62,8 +62,11 @@ app.use((req, res, next) => {
 
 /* ---------- утилиты ---------- */
 const N = (v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v);
-const str = (v, max = 2000) => String(v == null ? '' : v).trim().slice(0, max);
+// обрезка не оставляет половину эмодзи (висящий старший суррогат превращался в «�»)
+const str = (v, max = 2000) => String(v == null ? '' : v).trim().slice(0, max).replace(/[\uD800-\uDBFF]$/, '');
 const num = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+// точка на карте: обе координаты заданы и в допустимых пределах
+const okPoint = (lat, lng) => lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 class HttpError extends Error { constructor(status, code, msg) { super(msg || code); this.status = status; this.code = code; } }
 const fail = (status, code, msg) => { throw new HttpError(status, code, msg); };
@@ -71,7 +74,9 @@ const h = (fn) => (req, res, next) => { try { const r = fn(req, res, next); if (
 
 function parseCookies(req) {
   const out = {};
-  (req.headers.cookie || '').split(';').forEach((p) => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
+  // чужая cookie с некорректной %-последовательностью не должна ломать все запросы (URIError → 500)
+  const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { return v; } };
+  (req.headers.cookie || '').split(';').forEach((p) => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = dec(p.slice(i + 1).trim()); });
   return out;
 }
 function demoBrowser(req, res) {
@@ -110,19 +115,24 @@ app.use('/api', (req, res, next) => {
   next();
 });
 const isMod = (u) => u && (u.role === 'moderator' || u.role === 'admin');
-const needAuth = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'auth_required' }));
+const needAuth = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'auth_required', message: errText(req, 'Сессия завершена — войдите снова') }));
 const needMod = (req, res, next) => (isMod(req.user) ? next() : res.status(403).json({ error: 'forbidden' }));
 const needAdmin = (req, res, next) => (req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'forbidden' }));
 
 function normTarget(t) {
-  t = str(t, 120).toLowerCase();
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return { type: 'email', value: t };
+  // без обрезки: длинный адрес раньше молча укорачивался до другого адреса (и код уходил не туда)
+  t = String(t == null ? '' : t).trim().toLowerCase();
+  if (t.length > 254) fail(400, 'bad_target', 'Укажите корректный e-mail или номер телефона');
+  // нулевой байт, управляющие символы, кавычки и угловые скобки в адресе не допускаются (кириллические домены — можно)
+  if (/^[^\s@<>"'`(),;:\\[\]\x00-\x1f\x7f]+@[^\s@<>"'`(),;:\\[\]\x00-\x1f\x7f]+\.[^\s@<>"'`(),;:\\[\]\x00-\x1f\x7f]+$/.test(t)) return { type: 'email', value: t };
   let d = t.replace(/[^\d+]/g, '');
   if (/^8\d{10}$/.test(d)) d = '+7' + d.slice(1);
   if (/^7\d{10}$/.test(d)) d = '+' + d;
   if (/^\+\d{10,15}$/.test(d)) return { type: 'phone', value: d };
   fail(400, 'bad_target', 'Укажите корректный e-mail или номер телефона');
 }
+// Настоящая календарная дата ГГГГ-ММ-ДД не раньше 1900 года («2026-02-30», «May 5», «1» — нет)
+const isoDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= '1900-01-01' && !isNaN(Date.parse(v + 'T00:00:00Z')) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
 function ageFrom(birth) {
   const b = new Date(birth); if (isNaN(b)) return -1;
   const n = new Date(); let a = n.getFullYear() - b.getFullYear();
@@ -157,8 +167,14 @@ function meDto(u) {
     family_id: u.family_id, card: u.card_mask || null, subscriptions: subs, created_at: u.created_at,
     stats: get(`SELECT (SELECT COUNT(*) FROM applications WHERE user_id = ?) apps, (SELECT COUNT(*) FROM applications WHERE user_id = ? AND found_at IS NOT NULL) found,
       (SELECT COUNT(*) FROM points_log WHERE user_id = ? AND delta > 0) helped`, u.id, u.id, u.id),
+    // счётчики для главной кабинета (по индексам) — чтобы не грузить полные списки ради чисел
+    counts: get(`SELECT (SELECT COUNT(*) FROM saved s JOIN applications a ON a.id = s.application_id WHERE s.user_id = ? AND a.status IN ('published','found')) saved,
+      (SELECT COUNT(*) FROM valuables WHERE user_id = ?) valuables,
+      (SELECT COUNT(*) FROM (SELECT id FROM chats WHERE owner_id = ? UNION SELECT id FROM chats WHERE other_id = ? UNION SELECT c.id FROM chats c JOIN applications a ON a.id = c.application_id WHERE a.family_id = ?)) chats`,
+      u.id, u.id, u.id, u.id, N(u.family_id)),
     unread: get('SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND read = 0', u.id).c,
-    unreadChats: get(`SELECT COUNT(*) c FROM messages m JOIN chats c ON c.id = m.chat_id WHERE (c.owner_id = ? OR c.other_id = ?) AND m.sender_id != ? AND m.read = 0`, u.id, u.id, u.id).c
+    // UNION вместо OR — обе ветки идут по индексам chats(owner_id) / chats(other_id)
+    unreadChats: get(`SELECT COUNT(*) c FROM messages m WHERE m.chat_id IN (SELECT id FROM chats WHERE owner_id = ? UNION SELECT id FROM chats WHERE other_id = ?) AND m.sender_id != ? AND m.read = 0`, u.id, u.id, u.id).c
   };
 }
 const hasFeature = (uid, feature) => !!get('SELECT 1 FROM subscriptions s JOIN tariffs t ON t.id = s.tariff_id WHERE s.user_id = ? AND t.feature = ? AND s.until > ?', uid, feature, now());
@@ -167,6 +183,8 @@ const hasFeature = (uid, feature) => !!get('SELECT 1 FROM subscriptions s JOIN t
 // или не принял сообщение, код аннулируется и пользователь видит понятную ошибку.
 function otpChannelReady(t) {
   if (DEV || S.channels[t.type === 'email' ? 'email' : 'sms']) return;
+  // не подключён ни один канал — не отправляем человека по кругу на второй способ входа
+  if (!S.channels.email && !S.channels.sms) fail(503, 'channel_unavailable', 'Вход временно недоступен. Попробуйте позже или напишите в поддержку.');
   fail(503, 'channel_unavailable', t.type === 'phone' ? 'Вход по номеру телефона временно недоступен. Войдите по e-mail.' : 'Вход по e-mail временно недоступен. Войдите по номеру телефона.');
 }
 const reqLang = (req, u) => (req.get('X-Lang') === 'en' || (!req.get('X-Lang') && u && u.lang === 'en') ? 'en' : 'ru');
@@ -189,8 +207,10 @@ app.post('/api/auth/request', h(async (req, res) => {
   const code = String(crypto.randomInt(100000, 1000000));
   run('INSERT INTO otp (target, code, expires_at, created_at) VALUES (?,?,?,?)', t.otpKey, hashCode(t.otpKey, code), Date.now() + 10 * 60e3, Date.now());
   if (!PUBLIC_DEMO) await deliverCode(t, 'login', `Код входа в «Мой лучший агент»: ${code}. Никому не сообщайте его.`, code, reqLang(req));
-  const exists = !!get(`SELECT 1 FROM users WHERE ${t.type} = ?`, t.value);
-  res.json({ ok: true, type: t.type, target: t.value, isNew: !exists, devCode: showCode(req) ? code : undefined });
+  // есть ли аккаунт — не сообщаем (иначе по ответу перебирают адреса). Исключение — тестовый режим, где код и так на экране;
+  // в остальных случаях новый пользователь узнаёт об этом только после верного кода (verify → name_required)
+  const dev = showCode(req);
+  res.json({ ok: true, type: t.type, target: t.value, isNew: dev ? !get(`SELECT 1 FROM users WHERE ${t.type} = ?`, t.value) : undefined, devCode: dev ? code : undefined });
 }));
 
 app.post('/api/auth/verify', h((req, res) => {
@@ -203,8 +223,11 @@ app.post('/api/auth/verify', h((req, res) => {
   if (!u) {
     const name = str(req.body.name, 80), birth = str(req.body.birthdate, 10);
     if (!name) fail(400, 'name_required', 'Укажите имя');
+    if (birth && !isoDay(birth)) fail(400, 'bad_birthdate', 'Укажите дату рождения');
     if (ageFrom(birth) < 18) fail(400, 'age_18', 'Регистрация доступна только с 18 лет');
-    if (!req.body.consent_pd || !req.body.consent_policy) fail(400, 'consent_required', 'Необходимо согласие на обработку персональных данных и с политикой конфиденциальности');
+    if (ageFrom(birth) > 120) fail(400, 'bad_birthdate', 'Проверьте дату рождения');
+    // согласие — только явное true (строки «false», «0» согласием не считаются)
+    if (req.body.consent_pd !== true || req.body.consent_policy !== true) fail(400, 'consent_required', 'Необходимо согласие на обработку персональных данных и с политикой конфиденциальности');
     const id = run(`INSERT INTO users (${t.type}, name, birthdate, lang, city, consent_at) VALUES (?,?,?,?,?,datetime('now'))`,
       t.value, name, birth, req.body.lang === 'en' ? 'en' : 'ru', str(req.body.city, 80)).lastInsertRowid;
     u = get('SELECT * FROM users WHERE id = ?', id);
@@ -278,7 +301,11 @@ app.patch('/api/me', needAuth, h((req, res) => {
   if ('name' in b) { set.name = str(b.name, 80); if (!set.name) fail(400, 'name_required', 'Укажите имя'); }
   if ('city' in b) set.city = str(b.city, 80);
   if ('lang' in b) set.lang = b.lang === 'en' ? 'en' : 'ru';
-  if ('avatar' in b) set.avatar = /^\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/.test(b.avatar || '') ? b.avatar : '';
+  if ('avatar' in b) {
+    set.avatar = /^\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/.test(b.avatar || '') ? b.avatar : '';
+    // аватар — только реально загруженный этим пользователем файл
+    if (set.avatar && set.avatar !== u.avatar && !get('SELECT 1 FROM uploads WHERE name = ? AND user_id = ?', set.avatar.slice(9), u.id)) fail(400, 'bad_image', 'Фото не найдено — загрузите его заново');
+  }
   if ('notify_push' in b) set.notify_push = b.notify_push ? 1 : 0;
   if ('notify_email' in b) set.notify_email = b.notify_email ? 1 : 0;
   if (b.push_prefs && typeof b.push_prefs === 'object') {
@@ -294,7 +321,10 @@ app.patch('/api/me', needAuth, h((req, res) => {
   if (b.zone) {
     const r = num(b.zone.radius);
     set.zone_enabled = b.zone.enabled ? 1 : 0;
-    if (b.zone.lat != null) { set.zone_lat = num(b.zone.lat); set.zone_lng = num(b.zone.lng); }
+    if (b.zone.lat != null || b.zone.lng != null) {
+      set.zone_lat = num(b.zone.lat); set.zone_lng = num(b.zone.lng);
+      if (!okPoint(set.zone_lat, set.zone_lng)) fail(400, 'bad_point', 'Некорректная точка');
+    }
     if (r != null) set.zone_radius = Math.min(20, Math.max(0.5, r));
     if (set.zone_enabled && (set.zone_lat ?? u.zone_lat) == null) fail(400, 'zone_point', 'Укажите центр зоны на карте');
   }
@@ -398,7 +428,7 @@ app.get('/api/notifications', needAuth, h((req, res) => res.json({ items: I18N.l
 app.post('/api/notifications/read', needAuth, h((req, res) => { run('UPDATE notifications SET read = 1 WHERE user_id = ?', req.user.id); res.json({ ok: true }); }));
 app.post('/api/push/subscribe', needAuth, h((req, res) => {
   const sub = req.body.subscription;
-  if (!sub || typeof sub.endpoint !== 'string' || sub.endpoint.length > 1000 || !/^https:\/\/[^/\s]+\//.test(sub.endpoint)) fail(400, 'bad_sub', 'Некорректная подписка');
+  if (!sub || typeof sub.endpoint !== 'string' || sub.endpoint.length > 1000 || !/^https:\/\/[^/\s]+\//.test(sub.endpoint) || !S.pushHostOk(sub.endpoint)) fail(400, 'bad_sub', 'Некорректная подписка');
   const keys = sub.keys || {};
   if (typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string' || keys.p256dh.length > 200 || keys.auth.length > 100) fail(400, 'bad_sub', 'Некорректная подписка');
   if (get('SELECT COUNT(*) c FROM push_subs WHERE user_id = ?', req.user.id).c >= 10) run('DELETE FROM push_subs WHERE id = (SELECT MIN(id) FROM push_subs WHERE user_id = ?)', req.user.id);
@@ -466,7 +496,8 @@ function appDto(a, viewer, extra = {}) {
   const hidePd = a.category === 'people' && (a.status === 'found' || a.status === 'closed') && !isMod(viewer);
   const photos = JSON.parse(a.photos || '[]');
   let details = {}; try { details = JSON.parse(a.details || '{}'); } catch (e) { /* пустые параметры */ }
-  const author = get('SELECT role, points FROM users WHERE id = ?', a.user_id) || { role: 'user', points: 0 };
+  // в списках автор приходит сразу из JOIN (author_role, author_points) — без отдельного запроса на каждую карточку
+  const author = (a.author_role !== undefined ? (a.author_role != null && { role: a.author_role, points: a.author_points }) : get('SELECT role, points FROM users WHERE id = ?', a.user_id)) || { role: 'user', points: 0 };
   const o = {
     id: a.id, kind: a.kind, category: a.category, status: a.status, title: a.title,
     description: hidePd ? '' : a.description, features: hidePd ? '' : a.features,
@@ -553,8 +584,9 @@ function readApp(b, isNew, existing) {
   o.description = str(b.description, 4000); o.features = str(b.features, 1000);
   o.species = str(b.species, 60);
   o.event_date = str(b.event_date, 16) || new Date().toISOString().slice(0, 10);
-  if (isNaN(new Date(o.event_date))) fail(400, 'bad_date', 'Некорректная дата');
-  if (new Date(o.event_date) > new Date(Date.now() + 864e5)) fail(400, 'future_date', 'Дата не может быть в будущем');
+  if (!isoDay(o.event_date)) fail(400, 'bad_date', 'Некорректная дата');
+  // «сегодня» в самом восточном часовом поясе (UTC+14): позже этой даты событие ещё нигде не наступило
+  if (o.event_date > new Date(Date.now() + 14 * 3600e3).toISOString().slice(0, 10)) fail(400, 'future_date', 'Дата не может быть в будущем');
   o.event_time = str(b.event_time, 5);
   if (o.event_time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(o.event_time)) fail(400, 'bad_time', 'Некорректное время');
   o.lat = num(b.lat); o.lng = num(b.lng);
@@ -607,34 +639,63 @@ app.get('/api/applications', h((req, res) => {
   if (q.q) {
     const terms = str(q.q, 100).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6);
     // у найденных людей описание, приметы и адрес скрыты — по ним и не ищем, иначе поиск выдаёт скрытое
-    for (const t of terms) { where.push("(lower(a.title) LIKE ? OR lower(a.species) LIKE ? OR (NOT (a.category = 'people' AND a.status IN ('found','closed')) AND (lower(a.description) LIKE ? OR lower(a.features) LIKE ? OR lower(a.address) LIKE ? OR lower(a.details) LIKE ?)))"); const l = '%' + t + '%'; p.push(l, l, l, l, l, l); }
+    // % и _ в запросе — обычные символы, а не шаблоны LIKE
+    const E = " ESCAPE '\\'";
+    for (const t of terms) { where.push(`(lower(a.title) LIKE ?${E} OR lower(a.species) LIKE ?${E} OR (NOT (a.category = 'people' AND a.status IN ('found','closed')) AND (lower(a.description) LIKE ?${E} OR lower(a.features) LIKE ?${E} OR lower(a.address) LIKE ?${E} OR lower(a.details) LIKE ?${E})))`); const l = '%' + t.replace(/[\\%_]/g, '\\$&') + '%'; p.push(l, l, l, l, l, l); }
   }
-  // Порядок: по умолчанию «рекомендуемые» (экстренные и поднятые в топ — выше), либо строго по дате / вознаграждению
-  const ORDER = { new: 'a.created_at DESC, a.id DESC', old: 'a.created_at ASC, a.id ASC', reward: 'a.reward DESC, a.created_at DESC' }[q.sort];
-  let rows = ORDER
-    ? all(`SELECT a.* FROM applications a WHERE ${where.join(' AND ')} ORDER BY ${ORDER} LIMIT 500`, ...p)
-    : all(`SELECT a.* FROM applications a WHERE ${where.join(' AND ')} ORDER BY (a.emergency_status = 'active') DESC, (a.promoted_until > ?) DESC, a.created_at DESC LIMIT 500`, ...p, now());
   const lat = num(q.lat), lng = num(q.lng), radius = num(q.radius);
-  let list = rows.map((a) => {
-    const d = lat != null && lng != null ? S.distKm(lat, lng, a.lat, a.lng) : null;
-    return { a, d };
-  });
-  if (radius && lat != null) list = list.filter((x) => x.d != null && x.d <= radius);
-  if (q.sort === 'near' && lat != null) list.sort((x, y) => (x.d ?? 1e9) - (y.d ?? 1e9));
-  const limit = Math.min(200, Number(q.limit) || 100);
-  res.json({ total: list.length, items: list.slice(0, limit).map((x) => appDto(x.a, req.user, { distance: x.d })) });
+  const geo = lat != null && lng != null && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+  const cosLat = geo ? Math.max(0.01, Math.cos(lat * Math.PI / 180)) : 1;
+  // Радиус и область карты — прямо в SQL (по прямоугольнику), до сортировки и ограничения выборки:
+  // раньше бралось 500 самых новых заявок по стране и уже из них — те, что рядом, и ближние терялись
+  if (geo && radius > 0) {
+    const dLat = radius / 111, dLng = radius / (111 * cosLat);
+    where.push('a.lat BETWEEN ? AND ? AND a.lng BETWEEN ? AND ?'); p.push(lat - dLat, lat + dLat, lng - dLng, lng + dLng);
+  }
+  const bb = String(q.bbox || '').split(',').map(Number);
+  if (bb.length === 4 && bb.every(Number.isFinite)) { where.push('a.lat BETWEEN ? AND ? AND a.lng BETWEEN ? AND ?'); p.push(bb[0], bb[2], bb[1], bb[3]); }
+  // Порядок: по умолчанию «рекомендуемые» (экстренные и поднятые в топ — выше), либо строго по дате / вознаграждению / расстоянию
+  const ORDERS = { new: 'a.created_at DESC, a.id DESC', old: 'a.created_at ASC, a.id ASC', reward: 'a.reward DESC, a.created_at DESC' };
+  let order = "(a.emergency_status = 'active') DESC, (a.promoted_until > ?) DESC, a.created_at DESC", op = [now()];
+  if (Object.hasOwn(ORDERS, q.sort)) { order = ORDERS[q.sort]; op = []; }
+  else if (q.sort === 'near' && geo) { order = '(a.lat IS NULL), ((a.lat - ?) * (a.lat - ?) + ((a.lng - ?) * ?) * ((a.lng - ?) * ?)), a.id DESC'; op = [lat, lat, lng, cosLat, lng, cosLat]; }
+  const limit = Math.max(1, Math.min(200, Math.floor(Number(q.limit)) || 100));
+  const offset = Math.max(0, Math.min(1e6, Math.floor(Number(q.offset)) || 0));
+  const W = where.join(' AND ');
+  const dist = (a) => (geo ? S.distKm(lat, lng, a.lat, a.lng) : null);
+  let total, rows;
+  if (geo && radius > 0) {
+    // внутри прямоугольника — точная проверка расстояния; страница выбирается уже из подходящих
+    const ids = all(`SELECT a.id, a.lat, a.lng FROM applications a WHERE ${W} ORDER BY ${order}`, ...p, ...op)
+      .filter((a) => { const d = dist(a); return d != null && d <= radius; }).map((a) => a.id);
+    total = ids.length;
+    const page = ids.slice(offset, offset + limit);
+    const byId = new Map(page.length ? all(`SELECT a.*, u.role author_role, u.points author_points FROM applications a LEFT JOIN users u ON u.id = a.user_id WHERE a.id IN (${page.map(() => '?').join(',')})`, ...page).map((a) => [a.id, a]) : []);
+    rows = page.map((id) => byId.get(id)).filter(Boolean);
+  } else {
+    total = get(`SELECT COUNT(*) c FROM applications a WHERE ${W}`, ...p).c;
+    rows = all(`SELECT a.*, u.role author_role, u.points author_points FROM applications a LEFT JOIN users u ON u.id = a.user_id WHERE ${W} ORDER BY ${order} LIMIT ? OFFSET ?`, ...p, ...op, limit, offset);
+  }
+  res.json({ total, offset, items: rows.map((a) => appDto(a, req.user, { distance: dist(a) })) });
 }));
 
 // Совпадения заявки для её автора: сильные (≥ 50 %) — всем; «возможные» (35–49 %) — по заявкам о людях всем,
 // по животным и вещам — с тарифом «Расширенный поиск». Пары, отклонённые этой стороной или владельцем пропажи, скрыты.
 function matchRows(a) {
   const mine = a.kind === 'lost' ? 'lost' : 'found', oth = a.kind === 'lost' ? 'found_id' : 'lost_id';
-  return all(`SELECT m.id match_id, m.score, m.reasons, m.lost_vote, m.found_vote, x.* FROM matches m JOIN applications x ON x.id = m.${oth}
+  return all(`SELECT m.id match_id, m.score, m.reasons, m.lost_vote, m.found_vote, x.*, u.role author_role, u.points author_points FROM matches m JOIN applications x ON x.id = m.${oth} LEFT JOIN users u ON u.id = x.user_id
     WHERE m.${mine}_id = ? AND x.status IN ('published','found') AND m.lost_vote != 'no' AND m.${mine}_vote != 'no' ORDER BY m.score DESC`, a.id)
     .map((x) => Object.assign(x, { my_vote: x[mine + '_vote'], their_vote: x[(mine === 'lost' ? 'found' : 'lost') + '_vote'] }));
 }
+// Скрытая примета другой стороны не должна быть видна ни причиной «secret», ни прибавкой к баллам: иначе её можно
+// подобрать по одному слову, правя описание своей заявки. Такие пары пересчитываются без чужой приметы.
+function ownView(a, x) {
+  if (!x.secret || !String(x.reasons || '').includes('"secret"')) return x;
+  const r = M.matchInfo(a, Object.assign({}, x, { secret: '' }));
+  return Object.assign(x, { score: r.score, reasons: JSON.stringify(r.reasons) });
+}
 function matchesFor(a, u) {
-  const rows = matchRows(a);
+  const rows = matchRows(a).map((x) => ownView(a, x)).filter((x) => x.score >= M.WEAK).sort((x, y) => y.score - x.score);
   const weakOk = a.category === 'people' || S.hasPlus(a.user_id) || (u && S.hasPlus(u.id));
   const vis = rows.filter((m) => m.score >= M.STRONG || weakOk);
   return {
@@ -669,7 +730,7 @@ app.get('/api/applications/:id', h((req, res) => {
   res.json({ item: appDto(a, req.user, extra) });
 }));
 
-app.post('/api/applications', needAuth, h((req, res) => {
+app.post('/api/applications', needAuth, h(async (req, res) => {
   rateLimit('app:' + req.user.id, 20, 3600e3);
   const o = readApp(req.body, true);
   o.user_id = req.user.id;
@@ -684,7 +745,8 @@ app.post('/api/applications', needAuth, h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', id);
   audit(req, 'application.create', 'application:' + id, { kind: a.kind, category: a.category, status: a.status });
   let matches = [];
-  if (a.status === 'published') matches = S.runMatching(a);
+  // подбор идёт порциями: пока он считает, сервер обслуживает других пользователей
+  if (a.status === 'published') matches = await S.runMatchingAsync(a);
   else notifyMods('Новая заявка на проверке', `«${a.title}»`, '#/admin/moderation');
   if (a.emergency_status === 'pending') notifyMods('Запрос экстренного оповещения', `«${a.title}», радиус ${a.emergency_radius} км`, '#/admin/emergency');
   res.json({ item: appDto(a, req.user), matches: matches.length });
@@ -696,20 +758,24 @@ function notifyMods(title, body, link) {
   for (const m of all("SELECT id FROM users WHERE role IN ('moderator','admin') AND blocked = 0")) S.notify(m.id, { type: 'moderation', title, body, link, pushTitle: title, pushBody: 'Откройте панель администратора', email: false });
 }
 
-app.patch('/api/applications/:id', needAuth, h((req, res) => {
+app.patch('/api/applications/:id', needAuth, h(async (req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
   if (!a || !canEdit(a, req.user)) fail(404, 'not_found', 'Заявка не найдена');
   if (a.status === 'closed') fail(400, 'closed', 'Закрытую заявку нельзя редактировать');
+  // заявку успели изменить в другой вкладке (или другой член семьи) после открытия формы — не затираем молча
+  if (typeof req.body.base_updated_at === 'string' && req.body.base_updated_at !== a.updated_at) fail(409, 'conflict', 'Заявку изменили в другой вкладке — обновите страницу');
+  rateLimit('appedit:' + req.user.id, 30, 3600e3); // каждая правка пересчитывает совпадения
   const o = readApp(Object.assign({ confirm_rights: true, relation: a.relation }, req.body), false, a);
   // Изменённая заявка о человеке снова проходит проверку (кроме правки модератором)
   if (a.category === 'people' && ['published', 'found'].includes(a.status) && !isMod(req.user)) o.status = 'pending';
-  if (a.status === 'rejected') o.status = a.category === 'people' ? 'pending' : 'published';
+  // отклонённая модератором заявка после правки снова идёт на проверку (иначе её публикуют без модерации)
+  if (a.status === 'rejected') o.status = 'pending';
   o.updated_at = now();
   const keys = Object.keys(o);
   run(`UPDATE applications SET ${keys.map((k) => k + ' = ?').join(', ')} WHERE id = ?`, ...keys.map((k) => N(o[k])), a.id);
   const b = get('SELECT * FROM applications WHERE id = ?', a.id);
   audit(req, 'application.update', 'application:' + a.id);
-  if (b.status === 'published') S.runMatching(b); else if (b.status === 'pending') notifyMods('Заявка изменена и ждёт проверки', `«${b.title}»`, '#/admin/moderation');
+  if (b.status === 'published') await S.runMatchingAsync(b); else if (b.status === 'pending') notifyMods('Заявка изменена и ждёт проверки', `«${b.title}»`, '#/admin/moderation');
   res.json({ item: appDto(b, req.user) });
 }));
 
@@ -723,6 +789,7 @@ app.post('/api/applications/:id/status', needAuth, h((req, res) => {
   run(`UPDATE applications SET status = ?, found_at = CASE WHEN ? = 'found' THEN datetime('now') ELSE found_at END,
        emergency_status = CASE WHEN emergency_status IN ('active','pending') THEN 'done' ELSE emergency_status END, updated_at = datetime('now') WHERE id = ?`, st, st, a.id);
   audit(req, 'application.status', 'application:' + a.id, st);
+  run("UPDATE payments SET status = 'canceled' WHERE application_id = ? AND status = 'pending'", a.id); // продвижение снятой заявки не оплачивается
   // Баллы помощнику: собеседник из чата этой заявки, подтверждённый автором
   const helper = num(req.body.helper_id);
   const ch = st === 'found' && helper && helper !== a.user_id && get('SELECT id FROM chats WHERE application_id = ? AND other_id = ?', a.id, helper);
@@ -763,17 +830,22 @@ app.delete('/api/applications/:id', needAuth, h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
   if (!a || !canEdit(a, req.user)) fail(404, 'not_found', 'Заявка не найдена');
   tx(() => { run('DELETE FROM matches WHERE lost_id = ? OR found_id = ?', a.id, a.id); run('DELETE FROM saved WHERE application_id = ?', a.id); run('DELETE FROM applications WHERE id = ?', a.id); });
+  run("UPDATE payments SET status = 'canceled' WHERE application_id = ? AND status = 'pending'", a.id); // продвигать больше нечего
   audit(req, 'application.delete', 'application:' + a.id);
   res.json({ ok: true });
 }));
 
 app.post('/api/applications/:id/save', needAuth, h((req, res) => {
   const id = Number(req.params.id);
-  if (!get('SELECT 1 FROM applications WHERE id = ?', id)) fail(404, 'not_found', 'Заявка не найдена');
   const ex = get('SELECT 1 FROM saved WHERE user_id = ? AND application_id = ?', req.user.id, id);
-  if (ex) run('DELETE FROM saved WHERE user_id = ? AND application_id = ?', req.user.id, id);
-  else run('INSERT INTO saved (user_id, application_id) VALUES (?,?)', req.user.id, id);
-  res.json({ saved: !ex });
+  // желаемое состояние приходит явно ({saved: true|false}) — повтор запроса при плохой сети ничего не переключает
+  const want = typeof req.body.saved === 'boolean' ? req.body.saved : !ex;
+  if (!want) { run('DELETE FROM saved WHERE user_id = ? AND application_id = ?', req.user.id, id); return res.json({ saved: false }); } // убрать — можно всегда
+  // сохранить можно только заявку, которую пользователь и так видит (не скрытую, не закрытую, не на проверке)
+  const a = get('SELECT * FROM applications WHERE id = ?', id);
+  if (!a || !(['published', 'found'].includes(a.status) || canEdit(a, req.user))) fail(404, 'not_found', 'Заявка не найдена');
+  run('INSERT OR IGNORE INTO saved (user_id, application_id) VALUES (?,?)', req.user.id, id);
+  res.json({ saved: true });
 }));
 
 
@@ -811,14 +883,27 @@ app.post('/api/applications/:id/deletion-request', h((req, res) => {
   res.json({ ok: true });
 }));
 
+// Постраничная выдача личных списков: ?limit=&offset= (без limit — весь список, как раньше: обзор кабинета, выбор заявки для оплаты).
+// Берём на одну строку больше — по ней видно, есть ли следующая страница (has_more)
+const pageOf = (q) => { const l = Math.floor(Number(q.limit)); return l > 0 ? { limit: Math.min(l, 100), offset: Math.max(0, Math.floor(Number(q.offset)) || 0) } : null; };
+const pageArgs = (pg) => (pg ? [pg.limit + 1, pg.offset] : [-1, 0]);
+const pageCut = (rows, pg) => { const more = !!pg && rows.length > pg.limit; return { rows: more ? rows.slice(0, pg.limit) : rows, has_more: more }; };
 app.get('/api/my/applications', needAuth, h((req, res) => {
-  const rows = all('SELECT * FROM applications WHERE user_id = ? OR (family_id IS NOT NULL AND family_id = ?) ORDER BY created_at DESC', req.user.id, N(req.user.family_id));
-  res.json({ items: rows.map((a) => {
-    return appDto(a, req.user, { match_count: matchRows(a).filter((m) => m.score >= M.STRONG).length });
-  }) });
+  const pg = pageOf(req.query);
+  const { rows, has_more } = pageCut(all(`SELECT a.*, u.role author_role, u.points author_points FROM applications a LEFT JOIN users u ON u.id = a.user_id WHERE a.user_id = ? OR (a.family_id IS NOT NULL AND a.family_id = ?) ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, req.user.id, N(req.user.family_id), ...pageArgs(pg)), pg);
+  const ids = (k) => JSON.stringify(rows.filter((a) => a.kind === k).map((a) => a.id));
+  const mc = new Map([
+    ...all(`SELECT m.lost_id id, COUNT(*) c FROM matches m JOIN applications x ON x.id = m.found_id WHERE m.lost_id IN (SELECT value FROM json_each(?))
+      AND m.score >= ? AND x.status IN ('published','found') AND m.lost_vote != 'no' GROUP BY m.lost_id`, ids('lost'), M.STRONG).map((r) => [r.id, r.c]),
+    ...all(`SELECT m.found_id id, COUNT(*) c FROM matches m JOIN applications x ON x.id = m.lost_id WHERE m.found_id IN (SELECT value FROM json_each(?))
+      AND m.score >= ? AND x.status IN ('published','found') AND m.lost_vote != 'no' AND m.found_vote != 'no' GROUP BY m.found_id`, ids('found'), M.STRONG).map((r) => [r.id, r.c])
+  ]);
+  res.json({ items: rows.map((a) => appDto(a, req.user, { match_count: mc.get(a.id) || 0 })), has_more });
 }));
 app.get('/api/my/saved', needAuth, h((req, res) => {
-  res.json({ items: all("SELECT a.* FROM saved s JOIN applications a ON a.id = s.application_id WHERE s.user_id = ? AND a.status IN ('published','found','closed') ORDER BY a.created_at DESC", req.user.id).map((a) => appDto(a, req.user)) });
+  const pg = pageOf(req.query);
+  const { rows, has_more } = pageCut(all(`SELECT a.*, u.role author_role, u.points author_points FROM saved s JOIN applications a ON a.id = s.application_id LEFT JOIN users u ON u.id = a.user_id WHERE s.user_id = ? AND a.status IN ('published','found') ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, req.user.id, ...pageArgs(pg)), pg);
+  res.json({ items: rows.map((a) => appDto(a, req.user)), has_more });
 }));
 
 /* ---------- анонимный чат ---------- */
@@ -830,24 +915,25 @@ function chatFor(id, u) {
   c.side = isOwnerSide ? 'owner' : c.other_id === u.id ? 'other' : 'moderator';
   return c;
 }
-function chatDto(c, u) {
-  const last = get('SELECT text, photo, lat, created_at, sender_id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1', c.id);
+// pre — заранее посчитанные для списка чатов последнее сообщение, непрочитанные и проверка приметы (без запросов на каждый чат)
+function chatDto(c, u, pre) {
+  const last = pre ? pre.last : get('SELECT text, photo, lat, created_at, sender_id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1', c.id);
   const myId = c.side === 'owner' ? c.owner_id : c.other_id;
   const aliasOther = c.side === 'owner' ? (c.kind === 'lost' ? 'Откликнувшийся' : 'Владелец') : (c.kind === 'lost' ? 'Автор заявки (ищет)' : 'Нашедший');
   return {
     id: c.id, application: { id: c.application_id, title: c.title, kind: c.kind, category: c.category, status: c.app_status },
     side: c.side, alias: aliasOther, blocked: !!c.blocked_by, blocked_by_me: c.blocked_by === u.id,
     last: last ? { text: last.text, photo: !!last.photo, location: last.lat != null, created_at: last.created_at, mine: last.sender_id === u.id } : null,
-    unread: get('SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND sender_id != ? AND read = 0', c.id, myId).c,
+    unread: pre ? pre.unread : get('SELECT COUNT(*) c FROM messages WHERE chat_id = ? AND sender_id != ? AND read = 0', c.id, myId).c,
     created_at: c.created_at,
     // проверка скрытой приметы: автор заявки указал примету, которую знает только настоящий владелец (или нашедший)
-    verify: c.secret ? verifyState(c) : null
+    verify: c.secret ? (pre ? verifyFrom(pre.verify) : verifyState(c)) : null
   };
 }
-const VERIFY_MAX = 3;
+const VERIFY_MAX = 3, VERIFY_WORDS = 4; // попыток на чат; минимальный допустимый предел слов в ответе
+const verifyFrom = (v = []) => ({ ok: v.includes('verify_ok'), tries: v.length, left: v.includes('verify_ok') ? 0 : Math.max(0, VERIFY_MAX - v.length) });
 function verifyState(c) {
-  const v = all("SELECT meta FROM messages WHERE chat_id = ? AND meta LIKE 'verify_%'", c.id).map((m) => m.meta);
-  return { ok: v.includes('verify_ok'), tries: v.length, left: v.includes('verify_ok') ? 0 : Math.max(0, VERIFY_MAX - v.length) };
+  return verifyFrom(all("SELECT meta FROM messages WHERE chat_id = ? AND meta LIKE 'verify_%'", c.id).map((m) => m.meta));
 }
 app.post('/api/applications/:id/chat', needAuth, h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
@@ -862,14 +948,32 @@ app.post('/api/applications/:id/chat', needAuth, h((req, res) => {
   res.json({ id: c.id });
 }));
 app.get('/api/chats', needAuth, h((req, res) => {
-  const rows = all(`SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.family_id, a.secret FROM chats c JOIN applications a ON a.id = c.application_id
-    WHERE c.owner_id = ? OR c.other_id = ? OR (a.family_id IS NOT NULL AND a.family_id = ?) ORDER BY c.id DESC`, req.user.id, req.user.id, N(req.user.family_id));
-  const items = rows.map((c) => { c.side = c.other_id === req.user.id ? 'other' : 'owner'; return chatDto(c, req.user); })
+  // чаты пользователя — через UNION по индексам (OR по двум столбцам и семье давал полный перебор);
+  // последнее сообщение и непрочитанные — в том же запросе, тексты последних и проверки приметы — ещё двумя
+  const uid = req.user.id;
+  const rows = all(`SELECT c.*, a.title, a.kind, a.category, a.status app_status, a.family_id, a.secret,
+      (SELECT MAX(id) FROM messages WHERE chat_id = c.id) last_id,
+      (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.sender_id != (CASE WHEN c.other_id = ? THEN c.other_id ELSE c.owner_id END) AND m.read = 0) unread_n
+    FROM chats c JOIN applications a ON a.id = c.application_id
+    WHERE c.id IN (SELECT id FROM chats WHERE owner_id = ? UNION SELECT id FROM chats WHERE other_id = ?
+      UNION SELECT c2.id FROM chats c2 JOIN applications a2 ON a2.id = c2.application_id WHERE a2.family_id = ?)
+    ORDER BY COALESCE((SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY id DESC LIMIT 1), c.created_at) DESC, c.id DESC LIMIT ? OFFSET ?`, uid, uid, uid, N(req.user.family_id), ...pageArgs(pageOf(req.query)));
+  const pg = pageOf(req.query), more = !!pg && rows.length > pg.limit; if (more) rows.length = pg.limit;
+  const lastIds = JSON.stringify(rows.map((c) => c.last_id).filter(Boolean));
+  const lasts = new Map(all('SELECT id, text, photo, lat, created_at, sender_id FROM messages WHERE id IN (SELECT value FROM json_each(?))', lastIds).map((m) => [m.id, m]));
+  const ver = new Map();
+  for (const m of all("SELECT chat_id, meta FROM messages WHERE chat_id IN (SELECT value FROM json_each(?)) AND meta LIKE 'verify_%' ORDER BY id", JSON.stringify(rows.filter((c) => c.secret).map((c) => c.id)))) {
+    if (!ver.has(m.chat_id)) ver.set(m.chat_id, []);
+    ver.get(m.chat_id).push(m.meta);
+  }
+  const items = rows.map((c) => { c.side = c.other_id === uid ? 'other' : 'owner'; return chatDto(c, req.user, { last: lasts.get(c.last_id), unread: c.unread_n, verify: ver.get(c.id) }); })
     .sort((x, y) => String(y.last ? y.last.created_at : y.created_at).localeCompare(String(x.last ? x.last.created_at : x.created_at)));
-  res.json({ items });
+  res.json({ items, has_more: more });
 }));
 app.get('/api/chats/:id', needAuth, h((req, res) => {
   const c = chatFor(Number(req.params.id), req.user);
+  // модератор читает чужую переписку — это фиксируется в журнале, как и в админке
+  if (c.side === 'moderator') audit(req, 'moderation.chat_view', 'chat:' + c.id);
   const myId = c.side === 'owner' ? c.owner_id : c.other_id;
   if (c.side !== 'moderator') {
     const ch = run('UPDATE messages SET read = 1 WHERE chat_id = ? AND sender_id != ? AND read = 0', c.id, myId);
@@ -877,9 +981,13 @@ app.get('/api/chats/:id', needAuth, h((req, res) => {
     // upto — до какого сообщения прочитано: ответ на отправку может прийти к автору позже этого события
     if (ch && ch.changes) S.emit(c.side === 'owner' ? c.other_id : c.owner_id, 'chat_read', { chat_id: c.id, upto: get('SELECT MAX(id) m FROM messages WHERE chat_id = ?', c.id).m });
   }
-  const msgs = all('SELECT id, sender_id, text, photo, lat, lng, read, meta, created_at FROM messages WHERE chat_id = ? ORDER BY id', c.id)
+  // последние 100 сообщений; более ранние — по ?before=<id первого показанного> (длинная переписка не грузится целиком)
+  const before = Math.floor(Number(req.query.before)) || 0;
+  const page = all(`SELECT id, sender_id, text, photo, lat, lng, read, meta, created_at FROM messages WHERE chat_id = ? ${before > 0 ? 'AND id < ?' : ''} ORDER BY id DESC LIMIT 101`, ...(before > 0 ? [c.id, before] : [c.id]));
+  const has_more = page.length > 100; if (has_more) page.length = 100;
+  const msgs = page.reverse()
     .map((m) => ({ id: m.id, mine: m.sender_id === myId || (c.side === 'owner' && m.sender_id !== c.other_id), text: m.text, photo: m.photo, lat: m.lat, lng: m.lng, read: !!m.read, meta: m.meta || '', created_at: m.created_at, from: m.sender_id === c.other_id ? 'other' : 'owner' }));
-  res.json({ chat: chatDto(c, req.user), messages: msgs });
+  res.json({ chat: chatDto(c, req.user), messages: msgs, has_more });
 }));
 app.post('/api/chats/:id/messages', needAuth, h((req, res) => {
   const c = chatFor(Number(req.params.id), req.user);
@@ -887,7 +995,10 @@ app.post('/api/chats/:id/messages', needAuth, h((req, res) => {
   if (c.blocked_by) fail(403, 'blocked', 'Переписка заблокирована');
   rateLimit('msg:' + req.user.id, 60, 60e3);
   const text = str(req.body.text, 2000), photo = /^\/uploads\/[a-f0-9]{32}\.(jpg|png|webp)$/.test(req.body.photo || '') ? req.body.photo : '';
+  // фото — только реально загруженный этим пользователем файл (иначе у собеседника «битая» картинка)
+  if (photo && !get('SELECT 1 FROM uploads WHERE name = ? AND user_id = ?', photo.slice(9), req.user.id)) fail(400, 'bad_image', 'Фото не найдено — загрузите его заново');
   const lat = num(req.body.lat), lng = num(req.body.lng);
+  if ((lat != null || lng != null) && !okPoint(lat, lng)) fail(400, 'bad_point', 'Некорректная точка');
   if (!text && !photo && lat == null) fail(400, 'empty', 'Пустое сообщение');
   const id = run('INSERT INTO messages (chat_id, sender_id, text, photo, lat, lng) VALUES (?,?,?,?,?,?)', c.id, req.user.id, text, photo, N(lat), N(lng)).lastInsertRowid;
   const to = c.side === 'owner' ? c.other_id : c.owner_id;
@@ -923,7 +1034,13 @@ app.post('/api/chats/:id/verify', needAuth, h((req, res) => {
   if (!st.left) fail(429, 'verify_limit', 'Попытки закончились. Договоритесь с автором заявки в чате');
   const answer = str(req.body.answer, 300);
   if (answer.length < 2) fail(400, 'required', 'Напишите примету');
-  const ok = M.commonWords(c.secret, answer).length >= Math.min(2, M.commonWords(c.secret, c.secret).length) && M.commonWords(c.secret, answer).length > 0;
+  // ответ-«словарь» (перечислить побольше цветов и примет) не проходит: число значимых слов ограничено,
+  // и не меньше половины из них должны совпасть со скрытой приметой
+  const sig = (s) => M.tokens(s).filter((w) => w.length > 2 && !M.STOP.has(w));
+  const aw = sig(answer);
+  if (aw.length > Math.max(VERIFY_WORDS, sig(c.secret).length + 2)) fail(400, 'too_long', 'Назовите примету коротко, своими словами');
+  const hits = M.commonWords(c.secret, answer).length;
+  const ok = hits > 0 && hits >= Math.min(2, M.commonWords(c.secret, c.secret).length) && hits / aw.length >= 0.5;
   const meta = ok ? 'verify_ok' : 'verify_fail';
   const id = run('INSERT INTO messages (chat_id, sender_id, text, meta) VALUES (?,?,?,?)', c.id, req.user.id, answer, meta).lastInsertRowid;
   const msg = { id, chat_id: c.id, text: answer, photo: '', lat: null, lng: null, read: false, meta, created_at: now() };
@@ -941,8 +1058,12 @@ app.post('/api/complaints', needAuth, h((req, res) => {
   const tid = Number(req.body.target_id), reason = str(req.body.reason, 1000);
   if (!tid || !reason) fail(400, 'required', 'Укажите причину');
   if (tt === 'chat') chatFor(tid, req.user);
+  // на сообщение жалуется только участник этого чата
+  if (tt === 'message') { const m = get('SELECT chat_id FROM messages WHERE id = ?', tid); if (!m) fail(404, 'not_found', 'Объект жалобы не найден'); chatFor(m.chat_id, req.user); }
   const exists = { application: 'applications', message: 'messages', user: 'users', chat: 'chats' }[tt];
   if (!get(`SELECT 1 FROM ${exists} WHERE id = ?`, tid)) fail(404, 'not_found', 'Объект жалобы не найден');
+  // повтор той же жалобы (двойной клик, повтор запроса) не создаёт вторую запись
+  if (get("SELECT 1 FROM complaints WHERE user_id = ? AND target_type = ? AND target_id = ? AND status = 'open'", req.user.id, tt, tid)) return res.json({ ok: true, duplicate: true });
   run('INSERT INTO complaints (user_id, target_type, target_id, reason) VALUES (?,?,?,?)', req.user.id, tt, tid, reason);
   notifyMods('Новая жалоба', reason.slice(0, 120), '#/admin/complaints');
   audit(req, 'complaint.create', `${tt}:${tid}`);
@@ -984,7 +1105,7 @@ app.patch('/api/valuables/:id', needAuth, h((req, res) => {
   }
   res.json({ item: valDto(get('SELECT * FROM valuables WHERE id = ?', v.id)) });
 }));
-app.delete('/api/valuables/:id', needAuth, h((req, res) => { run('DELETE FROM valuables WHERE id = ? AND user_id = ?', Number(req.params.id), req.user.id); res.json({ ok: true }); }));
+app.delete('/api/valuables/:id', needAuth, h((req, res) => { if (!run('DELETE FROM valuables WHERE id = ? AND user_id = ?', Number(req.params.id), req.user.id).changes) fail(404, 'not_found', 'Предмет не найден'); res.json({ ok: true }); }));
 // Публичная проверка предмета: только отметки «украдено / утеряно», без данных владельца
 app.get('/api/registry/check', h((req, res) => {
   rateLimit('chk:' + req.ip, 60, 600e3);
@@ -1065,6 +1186,13 @@ function completePayment(id, ok, cardMask, cardToken) {
   if (!p || p.status !== 'pending') return p;
   const t = get('SELECT * FROM tariffs WHERE id = ?', p.tariff_id), u = get('SELECT * FROM users WHERE id = ?', p.user_id);
   if (!ok) { run("UPDATE payments SET status = 'canceled' WHERE id = ?", id); return get('SELECT * FROM payments WHERE id = ?', id); }
+  // продвигать нечего: заявку удалили или сняли с публикации, пока шла оплата — платёж не проводим
+  if (t.feature === 'promote' && !(p.application_id && get("SELECT 1 FROM applications WHERE id = ? AND status = 'published'", p.application_id))) {
+    run("UPDATE payments SET status = 'canceled' WHERE id = ?", id);
+    run('INSERT INTO audit (user_id, action, target, meta) VALUES (?,?,?,?)', p.user_id, 'payment.app_unavailable', 'payment:' + id, PAY === 'yookassa' ? 'refund_required' : '');
+    if (PAY === 'yookassa') console.error('Оплата продвижения недоступной заявки — нужен возврат в ЮKassa, платёж', id);
+    return get('SELECT * FROM payments WHERE id = ?', id);
+  }
   const receipt = { customer: u.email || u.phone, items: [{ name: t.name_ru, quantity: 1, price: p.amount, vat: 'none', payment_subject: 'service', payment_mode: 'full_payment' }], total: p.amount, method: p.method };
   tx(() => {
     run("UPDATE payments SET status = 'succeeded', paid_at = datetime('now'), receipt = ? WHERE id = ?", JSON.stringify(receipt), id);
@@ -1110,6 +1238,11 @@ app.post('/api/payments/:id/confirm', needAuth, h((req, res) => {
   if (!p) fail(404, 'not_found', 'Платёж не найден');
   // Тестовая страница оплаты существует только в тестовом режиме без ключей ЮKassa; иначе статус приходит от провайдера
   if (PAY !== 'test') fail(403, 'provider_required', 'Подтверждение оплаты приходит от платёжного провайдера');
+  const tf = get('SELECT feature FROM tariffs WHERE id = ?', p.tariff_id);
+  if (req.body.success && p.status === 'pending' && tf && tf.feature === 'promote' && !get("SELECT 1 FROM applications WHERE id = ? AND status = 'published'", p.application_id)) {
+    run("UPDATE payments SET status = 'canceled' WHERE id = ?", p.id);
+    fail(400, 'app_unavailable', 'Заявка удалена или снята с публикации — оплата отменена, деньги не списаны');
+  }
   let mask = null;
   if (p.method === 'card' && req.body.success) {
     const card = String(req.body.card || '').replace(/\D/g, '');
@@ -1122,7 +1255,8 @@ app.post('/api/payments/:id/confirm', needAuth, h((req, res) => {
 }));
 app.get('/api/my/payments', needAuth, h((req, res) => res.json({ items: all('SELECT p.*, t.name_ru, t.name_en FROM payments p JOIN tariffs t ON t.id = p.tariff_id WHERE p.user_id = ? ORDER BY p.id DESC', req.user.id) })));
 app.post('/api/subscriptions/:id/auto', needAuth, h((req, res) => {
-  run('UPDATE subscriptions SET auto_renew = ? WHERE id = ? AND user_id = ?', req.body.auto_renew ? 1 : 0, Number(req.params.id), req.user.id); res.json({ ok: true });
+  if (!run('UPDATE subscriptions SET auto_renew = ? WHERE id = ? AND user_id = ?', req.body.auto_renew ? 1 : 0, Number(req.params.id), req.user.id).changes) fail(404, 'not_found', 'Подписка не найдена');
+  res.json({ ok: true });
 }));
 app.delete('/api/me/card', needAuth, h((req, res) => {
   run('UPDATE users SET card_token = NULL, card_mask = NULL WHERE id = ?', req.user.id);
@@ -1173,7 +1307,8 @@ app.post('/api/family', needAuth, h((req, res) => {
 app.post('/api/family/invite', needAuth, h((req, res) => {
   const f = req.user.family_id && get('SELECT * FROM families WHERE id = ?', req.user.family_id);
   if (!f || f.owner_id !== req.user.id) fail(403, 'forbidden', 'Приглашать может владелец семейного аккаунта');
-  if (get('SELECT COUNT(*) c FROM users WHERE family_id = ?', f.id).c >= 10) fail(400, 'limit', 'В семье не более 10 человек');
+  // в лимит входят и ещё не принятые приглашения — иначе десять приглашений давали 11 участников
+  if (get("SELECT (SELECT COUNT(*) FROM users WHERE family_id = ?) + (SELECT COUNT(*) FROM family_invites WHERE family_id = ? AND status = 'pending') c", f.id, f.id).c >= 10) fail(400, 'limit', 'В семье не более 10 человек');
   const t = normTarget(req.body.target);
   const u = get(`SELECT * FROM users WHERE ${t.type} = ?`, t.value);
   if (u && u.family_id === f.id) fail(400, 'already', 'Уже в вашей семье');
@@ -1191,6 +1326,7 @@ app.post('/api/family/invites/:id/:action', needAuth, h((req, res) => {
   if (!i) fail(404, 'not_found', 'Приглашение не найдено');
   if (req.params.action === 'accept') {
     if (req.user.family_id) fail(400, 'exists', 'Сначала выйдите из текущего семейного аккаунта');
+    if (get('SELECT COUNT(*) c FROM users WHERE family_id = ?', i.family_id).c >= 10) fail(400, 'limit', 'В семье не более 10 человек');
     run('UPDATE users SET family_id = ? WHERE id = ?', i.family_id, req.user.id);
     run("UPDATE family_invites SET status = 'accepted', user_id = ? WHERE id = ?", req.user.id, i.id);
   } else run("UPDATE family_invites SET status = 'declined' WHERE id = ?", i.id);
@@ -1208,7 +1344,8 @@ app.delete('/api/family/members/:uid', needAuth, h((req, res) => {
   const f = req.user.family_id && get('SELECT * FROM families WHERE id = ?', req.user.family_id);
   if (!f || f.owner_id !== req.user.id) fail(403, 'forbidden', 'Только владелец');
   const uid = Number(req.params.uid);
-  if (run('UPDATE users SET family_id = NULL WHERE id = ? AND family_id = ? AND id != ?', uid, f.id, req.user.id).changes) { run('UPDATE applications SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id); run('UPDATE wards SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id); }
+  if (!run('UPDATE users SET family_id = NULL WHERE id = ? AND family_id = ? AND id != ?', uid, f.id, req.user.id).changes) fail(404, 'not_found', 'Участник не найден');
+  run('UPDATE applications SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id); run('UPDATE wards SET family_id = NULL WHERE user_id = ? AND family_id = ?', uid, f.id);
   audit(req, 'family.remove', 'user:' + uid); res.json({ ok: true });
 }));
 
@@ -1229,7 +1366,7 @@ app.post('/api/role-requests', needAuth, h((req, res) => {
 app.get('/api/role-requests/my', needAuth, h((req, res) => res.json({ items: all('SELECT * FROM role_requests WHERE user_id = ? ORDER BY id DESC', req.user.id) })));
 app.get('/api/rating', h((req, res) => {
   const rows = all("SELECT id, name, role, org_name, points, avatar, city FROM users WHERE blocked = 0 AND role IN ('volunteer','partner','user') AND points > 0 ORDER BY points DESC LIMIT 50");
-  res.json({ items: rows.map((u, i) => ({ place: i + 1, name: u.role === 'partner' && u.org_name ? u.org_name : u.name.split(' ')[0] + (u.name.split(' ')[1] ? ' ' + u.name.split(' ')[1][0] + '.' : ''), role: u.role, points: u.points, level: S.levelOf(u.points), avatar: u.avatar, city: u.city, me: req.user && req.user.id === u.id })) });
+  res.json({ items: rows.map((u, i) => ({ place: i + 1, name: u.role === 'partner' && u.org_name ? u.org_name : u.name.split(' ')[0] + (u.name.split(' ')[1] ? ' ' + Array.from(u.name.split(' ')[1])[0] + '.' : ''), role: u.role, points: u.points, level: S.levelOf(u.points), avatar: u.avatar, city: u.city, me: req.user && req.user.id === u.id })) });
 }));
 app.get('/api/my/points', needAuth, h((req, res) => res.json({ items: I18N.localize(all('SELECT * FROM points_log WHERE user_id = ? ORDER BY id DESC LIMIT 100', req.user.id), ['reason'], I18N.isEn(req)) })));
 app.get('/api/stories', h((req, res) => res.json({ items: all('SELECT * FROM stories WHERE published = 1 ORDER BY id DESC LIMIT 12') })));
@@ -1252,7 +1389,7 @@ app.post('/api/leads', h((req, res) => {
   const kind = ['partner', 'investor'].includes(req.body.kind) ? req.body.kind : 'partner';
   const name = str(req.body.name, 120), contact = str(req.body.contact, 120);
   if (!name || !contact) fail(400, 'required', 'Укажите имя и контакт');
-  if (!req.body.consent) fail(400, 'consent_required', 'Нужно согласие на обработку персональных данных');
+  if (req.body.consent !== true) fail(400, 'consent_required', 'Нужно согласие на обработку персональных данных');
   run('INSERT INTO leads (kind, name, contact, org, message) VALUES (?,?,?,?,?)', kind, name, contact, str(req.body.org, 160), str(req.body.message, 2000));
   notifyMods(kind === 'investor' ? 'Заявка инвестора' : 'Заявка партнёра (с сайта)', name, '#/admin/leads');
   res.json({ ok: true });
@@ -1321,46 +1458,47 @@ function statsData() {
   const regions = all("SELECT COALESCE(NULLIF(city,''),'не указан') city, COUNT(*) total, SUM(status = 'found') found, SUM(status = 'published') active FROM applications GROUP BY 1 ORDER BY total DESC LIMIT 20");
   const days = all("SELECT date(created_at) d, COUNT(*) c FROM applications WHERE created_at >= date('now','-29 days') GROUP BY 1 ORDER BY 1");
   const foundDays = all("SELECT date(found_at) d, COUNT(*) c FROM applications WHERE found_at >= date('now','-29 days') GROUP BY 1 ORDER BY 1");
+  // заявки и пользователи — по одному проходу на таблицу (а не отдельный COUNT на каждый показатель)
+  const ap = get(`SELECT COUNT(*) applications, COALESCE(SUM(status = 'pending'), 0) pending, COALESCE(SUM(status = 'published'), 0) published, COALESCE(SUM(status = 'found'), 0) found,
+    COALESCE(SUM(emergency_status = 'active'), 0) emergencies_active, COALESCE(SUM(emergency_status = 'pending'), 0) emergencies_pending FROM applications`);
+  const us = get("SELECT COUNT(*) users, COALESCE(SUM(role = 'volunteer'), 0) volunteers, COALESCE(SUM(role = 'partner'), 0) partners FROM users");
   return {
-    totals: {
-      applications: get('SELECT COUNT(*) c FROM applications').c,
-      pending: get("SELECT COUNT(*) c FROM applications WHERE status = 'pending'").c,
-      published: get("SELECT COUNT(*) c FROM applications WHERE status = 'published'").c,
-      found: get("SELECT COUNT(*) c FROM applications WHERE status = 'found'").c,
+    totals: Object.assign({}, ap, us, badgesData(), {
       matches: get('SELECT COUNT(*) c FROM matches').c,
-      users: get('SELECT COUNT(*) c FROM users').c,
-      volunteers: get("SELECT COUNT(*) c FROM users WHERE role = 'volunteer'").c,
-      partners: get("SELECT COUNT(*) c FROM users WHERE role = 'partner'").c,
-      emergencies_active: get("SELECT COUNT(*) c FROM applications WHERE emergency_status = 'active'").c,
-      emergencies_pending: get("SELECT COUNT(*) c FROM applications WHERE emergency_status = 'pending'").c,
-      complaints: get("SELECT COUNT(*) c FROM complaints WHERE status = 'open'").c,
-      tickets: get("SELECT COUNT(*) c FROM tickets WHERE status = 'open'").c,
-      roles: get("SELECT COUNT(*) c FROM role_requests WHERE status = 'pending'").c,
-      deletion: get("SELECT COUNT(*) c FROM deletion_requests WHERE status = 'open'").c,
-      leads: get("SELECT COUNT(*) c FROM leads WHERE status = 'new'").c,
       revenue: get("SELECT COALESCE(SUM(amount),0) c FROM payments WHERE status = 'succeeded'").c
-    },
+    }),
     byCat, regions, days, foundDays
   };
 }
+// Счётчики для меню админки — отдельный лёгкий запрос (без графиков и разбивок статистики)
+function badgesData() {
+  return get(`SELECT (SELECT COUNT(*) FROM applications WHERE status = 'pending') pending,
+    (SELECT COUNT(*) FROM applications WHERE emergency_status = 'pending') emergencies_pending,
+    (SELECT COUNT(*) FROM complaints WHERE status = 'open') complaints, (SELECT COUNT(*) FROM tickets WHERE status = 'open') tickets,
+    (SELECT COUNT(*) FROM role_requests WHERE status = 'pending') roles, (SELECT COUNT(*) FROM deletion_requests WHERE status = 'open') deletion,
+    (SELECT COUNT(*) FROM leads WHERE status = 'new') leads`);
+}
 A.get('/stats', h((req, res) => res.json(statsData())));
+A.get('/badges', h((req, res) => res.json({ totals: badgesData() })));
 
 A.get('/applications', h((req, res) => {
   const q = req.query, where = ['1=1'], p = [];
   if (q.status) { where.push('a.status = ?'); p.push(str(q.status, 20)); }
   if (CATS.includes(q.category)) { where.push('a.category = ?'); p.push(q.category); }
   if (q.q) { where.push('(lower(a.title) LIKE ? OR lower(a.person_name) LIKE ? OR a.id = ?)'); p.push('%' + str(q.q).toLowerCase() + '%', '%' + str(q.q).toLowerCase() + '%', Number(q.q) || -1); }
-  const rows = all(`SELECT a.*, u.name author_name, u.email author_email, u.phone author_phone FROM applications a JOIN users u ON u.id = a.user_id WHERE ${where.join(' AND ')} ORDER BY a.id DESC LIMIT 300`, ...p);
-  res.json({ items: rows.map((a) => appDto(a, req.user, { author_name: a.author_name, author_contact: a.author_email || a.author_phone, contact: a.contact, relation: a.relation, complaints: get("SELECT COUNT(*) c FROM complaints WHERE target_type = 'application' AND target_id = ? AND status = 'open'", a.id).c })) });
+  const rows = all(`SELECT a.*, u.name author_name, u.email author_email, u.phone author_phone, u.role author_role, u.points author_points, COALESCE(cc.c, 0) open_complaints FROM applications a JOIN users u ON u.id = a.user_id
+    LEFT JOIN (SELECT target_id, COUNT(*) c FROM complaints WHERE target_type = 'application' AND status = 'open' GROUP BY target_id) cc ON cc.target_id = a.id
+    WHERE ${where.join(' AND ')} ORDER BY a.id DESC LIMIT 300`, ...p);
+  res.json({ items: rows.map((a) => appDto(a, req.user, { author_name: a.author_name, author_contact: a.author_email || a.author_phone, contact: a.contact, relation: a.relation, complaints: a.open_complaints })) });
 }));
-A.post('/applications/:id/moderate', h((req, res) => {
+A.post('/applications/:id/moderate', h(async (req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
   if (!a) fail(404, 'not_found', 'Заявка не найдена');
   const action = req.body.action;
   if (action === 'approve') {
     run("UPDATE applications SET status = 'published', reject_reason = '', updated_at = datetime('now') WHERE id = ?", a.id);
     S.notify(a.user_id, { type: 'moderation', title: 'Заявка опубликована', body: `«${a.title}» прошла проверку`, link: `#/a/${a.id}`, pushTitle: 'Заявка опубликована', pushBody: 'Ваша заявка прошла проверку' });
-    S.runMatching(get('SELECT * FROM applications WHERE id = ?', a.id));
+    await S.runMatchingAsync(get('SELECT * FROM applications WHERE id = ?', a.id));
   } else if (action === 'reject') {
     const reason = str(req.body.reason, 500) || 'Не соответствует правилам';
     run("UPDATE applications SET status = 'rejected', reject_reason = ?, emergency_status = CASE WHEN emergency_status = 'pending' THEN 'rejected' ELSE emergency_status END WHERE id = ?", reason, a.id);
@@ -1374,9 +1512,10 @@ A.post('/applications/:id/moderate', h((req, res) => {
   res.json({ ok: true });
 }));
 A.get('/emergencies', h((req, res) => {
-  const rows = all("SELECT * FROM applications WHERE emergency_status IN ('pending','active') ORDER BY emergency_status = 'pending' DESC, id DESC");
+  const rows = all(`SELECT a.*, u.role author_role, u.points author_points FROM applications a LEFT JOIN users u ON u.id = a.user_id WHERE a.emergency_status IN ('pending','active') ORDER BY a.emergency_status = 'pending' DESC, a.id DESC LIMIT 200`);
+  const zones = rows.length ? all('SELECT id, zone_lat, zone_lng, zone_radius FROM users WHERE zone_enabled = 1 AND blocked = 0') : []; // один раз, а не на каждую тревогу
   res.json({ items: rows.map((a) => appDto(a, req.user, { emergency_status: a.emergency_status, emergency_radius: a.emergency_radius,
-    reach: all('SELECT zone_lat, zone_lng, zone_radius FROM users WHERE zone_enabled = 1 AND blocked = 0 AND id != ?', a.user_id).filter((u) => { const d = S.distKm(u.zone_lat, u.zone_lng, a.lat, a.lng); return d != null && d <= a.emergency_radius + u.zone_radius; }).length })) });
+    reach: zones.filter((u) => { if (u.id === a.user_id) return false; const d = S.distKm(u.zone_lat, u.zone_lng, a.lat, a.lng); return d != null && d <= a.emergency_radius + u.zone_radius; }).length })) });
 }));
 A.post('/emergencies/:id', h((req, res) => {
   const a = get('SELECT * FROM applications WHERE id = ?', Number(req.params.id));
@@ -1402,6 +1541,7 @@ A.get('/complaints', h((req, res) => {
     if (c.target_type === 'application') { const a = get('SELECT id, title, status, user_id FROM applications WHERE id = ?', c.target_id); target = a && { title: a.title, link: `#/a/${a.id}`, user_id: a.user_id, status: a.status }; }
     if (c.target_type === 'chat') { const ch = get('SELECT c.*, a.title FROM chats c JOIN applications a ON a.id = c.application_id WHERE c.id = ?', c.target_id); target = ch && { title: 'Чат: ' + ch.title, chat_id: ch.id, user_ids: [ch.owner_id, ch.other_id].filter((x) => x !== c.user_id) }; }
     if (c.target_type === 'user') { const u = get('SELECT id, name FROM users WHERE id = ?', c.target_id); target = u && { title: u.name, user_id: u.id }; }
+    if (c.target_type === 'message') { const m = get('SELECT id, chat_id, sender_id, text FROM messages WHERE id = ?', c.target_id); target = m && { title: 'Сообщение: ' + (m.text || '').slice(0, 80), chat_id: m.chat_id, user_id: m.sender_id, user_ids: [m.sender_id] }; }
     return Object.assign(c, { target });
   }) });
 }));
@@ -1461,7 +1601,7 @@ A.post('/role-requests/:id', h((req, res) => {
   audit(req, 'role.' + (ok ? 'approve' : 'reject'), 'user:' + r.user_id, r.role);
   res.json({ ok: true });
 }));
-A.get('/deletion', h((req, res) => res.json({ items: all("SELECT d.*, a.title, a.status app_status FROM deletion_requests d LEFT JOIN applications a ON a.id = d.application_id ORDER BY d.status = 'open' DESC, d.id DESC") })));
+A.get('/deletion', h((req, res) => res.json({ items: all("SELECT d.*, a.title, a.status app_status FROM deletion_requests d LEFT JOIN applications a ON a.id = d.application_id ORDER BY d.status = 'open' DESC, d.id DESC LIMIT 300") })));
 A.post('/deletion/:id', h((req, res) => {
   const d = get('SELECT * FROM deletion_requests WHERE id = ?', Number(req.params.id)); if (!d) fail(404, 'not_found', 'Запрос не найден');
   if (req.body.action === 'delete') tx(() => { run('DELETE FROM matches WHERE lost_id = ? OR found_id = ?', d.application_id, d.application_id); run('DELETE FROM applications WHERE id = ?', d.application_id); });
@@ -1475,7 +1615,12 @@ A.get('/tickets', h((req, res) => res.json({ items: all(`SELECT t.*, u.name, u.e
   (SELECT COUNT(*) FROM ticket_messages m WHERE m.ticket_id = t.id) msgs
   FROM tickets t JOIN users u ON u.id = t.user_id ORDER BY t.status = 'open' DESC, t.status = 'closed', t.updated_at DESC LIMIT 300`) })));
 A.get('/leads', h((req, res) => res.json({ items: all('SELECT * FROM leads ORDER BY id DESC LIMIT 300') })));
-A.post('/leads/:id', h((req, res) => { run('UPDATE leads SET status = ? WHERE id = ?', str(req.body.status, 20) || 'done', Number(req.params.id)); res.json({ ok: true }); }));
+A.post('/leads/:id', h((req, res) => {
+  const st = req.body.status == null || req.body.status === '' ? 'done' : req.body.status;
+  if (!['new', 'in_work', 'done'].includes(st)) fail(400, 'bad_status', 'Недопустимый статус');
+  if (!run('UPDATE leads SET status = ? WHERE id = ?', st, Number(req.params.id)).changes) fail(404, 'not_found', 'Заявка не найдена');
+  res.json({ ok: true });
+}));
 A.get('/audit', h((req, res) => res.json({ items: all('SELECT l.*, u.name FROM audit l LEFT JOIN users u ON u.id = l.user_id ORDER BY l.id DESC LIMIT 500') })));
 A.get('/payments', h((req, res) => res.json({ items: all('SELECT p.*, t.name_ru, u.name FROM payments p JOIN tariffs t ON t.id = p.tariff_id JOIN users u ON u.id = p.user_id ORDER BY p.id DESC LIMIT 300') })));
 
@@ -1531,7 +1676,7 @@ AD.post('/stories', h((req, res) => {
   else run('INSERT INTO stories (category, title_ru, title_en, text_ru, text_en, city, published) VALUES (?,?,?,?,?,?,?)', ...v);
   audit(req, 'story.save', 'story:' + (b.id || 'new')); res.json({ ok: true });
 }));
-AD.delete('/stories/:id', h((req, res) => { run('DELETE FROM stories WHERE id = ?', Number(req.params.id)); res.json({ ok: true }); }));
+AD.delete('/stories/:id', h((req, res) => { if (!run('DELETE FROM stories WHERE id = ?', Number(req.params.id)).changes) fail(404, 'not_found', 'История не найдена'); audit(req, 'story.delete', 'story:' + Number(req.params.id)); res.json({ ok: true }); }));
 AD.get('/ads', h((req, res) => res.json({ items: all('SELECT * FROM ads ORDER BY sort, id') })));
 AD.post('/ads', h((req, res) => {
   const b = req.body, url = adUrl(b.url);
@@ -1564,14 +1709,22 @@ A.get('/export.xlsx', h(async (req, res) => {
   s.regions.forEach((r) => w3.addRow({ c: r.city, t: r.total, a: r.active, f: r.found })); head(w3);
   const w4 = wb.addWorksheet('Заявки');
   w4.columns = [{ header: '№', key: 'id', width: 8 }, { header: 'Тип', key: 'k', width: 12 }, { header: 'Категория', key: 'c', width: 12 }, { header: 'Статус', key: 's', width: 15 }, { header: 'Заголовок', key: 't', width: 40 }, { header: 'Город', key: 'city', width: 16 }, { header: 'Адрес', key: 'a', width: 30 }, { header: 'Дата события', key: 'd', width: 14 }, { header: 'Создана', key: 'cr', width: 20 }, { header: 'Найдено', key: 'f', width: 20 }, { header: 'Совпадений', key: 'm', width: 12 }, { header: 'Просмотры', key: 'v', width: 12 }];
-  for (const a of all('SELECT * FROM applications ORDER BY id DESC')) {
-    const col = a.kind === 'lost' ? 'lost_id' : 'found_id';
-    w4.addRow({ id: a.id, k: KIND[a.kind], c: CAT[a.category], s: ST[a.status] || a.status, t: a.title, city: a.city, a: a.address, d: a.event_date, cr: a.created_at, f: a.found_at || '', m: get(`SELECT COUNT(*) c FROM matches WHERE ${col} = ?`, a.id).c, v: a.views });
+  // число совпадений — одним запросом на сторону, а не отдельным COUNT на каждую заявку
+  const mc = { lost: new Map(), found: new Map() };
+  for (const r of all('SELECT lost_id id, COUNT(*) c FROM matches GROUP BY lost_id')) mc.lost.set(r.id, r.c);
+  for (const r of all('SELECT found_id id, COUNT(*) c FROM matches GROUP BY found_id')) mc.found.set(r.id, r.c);
+  // большие выгрузки строятся порциями, чтобы сервер успевал отвечать другим пользователям
+  const pause = () => new Promise((r) => setImmediate(r));
+  let n = 0;
+  for (const a of all('SELECT id, kind, category, status, title, city, address, event_date, created_at, found_at, views FROM applications ORDER BY id DESC')) {
+    w4.addRow({ id: a.id, k: KIND[a.kind], c: CAT[a.category], s: ST[a.status] || a.status, t: a.title, city: a.city, a: a.address, d: a.event_date, cr: a.created_at, f: a.found_at || '', m: mc[a.kind === 'lost' ? 'lost' : 'found'].get(a.id) || 0, v: a.views });
+    if (++n % 500 === 0) await pause();
   }
   head(w4); w4.autoFilter = 'A1:L1';
   const w5 = wb.addWorksheet('Совпадения');
   w5.columns = [{ header: 'Потеряно №', key: 'l', width: 12 }, { header: 'Найдено №', key: 'f', width: 12 }, { header: 'Совпадение, %', key: 's', width: 14 }, { header: 'Дата', key: 'd', width: 20 }];
-  all('SELECT * FROM matches ORDER BY id DESC').forEach((m) => w5.addRow({ l: m.lost_id, f: m.found_id, s: m.score, d: m.created_at })); head(w5);
+  for (const m of all('SELECT lost_id, found_id, score, created_at FROM matches ORDER BY id DESC')) { w5.addRow({ l: m.lost_id, f: m.found_id, s: m.score, d: m.created_at }); if (++n % 500 === 0) await pause(); }
+  head(w5);
   audit(req, 'stats.export', 'xlsx');
   res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="mba-stats-${new Date().toISOString().slice(0, 10)}.xlsx"` });
   await wb.xlsx.write(res); res.end();
@@ -1627,7 +1780,7 @@ function retention() {
 retention();
 setInterval(retention, 24 * 3600e3).unref();
 // подбор совпадений заново: с каждым днём радиус поиска пропажи растёт
-setInterval(() => S.rematchAll(), 6 * 3600e3).unref();
+setInterval(() => S.rematchAll().catch((e) => console.error('Подбор совпадений:', e.message)), 6 * 3600e3).unref();
 
 /* ---------- статика и SPA ---------- */
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '30d', immutable: true }));
@@ -1679,6 +1832,8 @@ const errText = (req, msg) => (req.get('X-Lang') === 'en' ? ERR_EN.toEn(msg) : m
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.code, message: errText(req, err.message) });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'too_big', message: errText(req, 'Слишком большой запрос') });
+  // некорректный JSON — ошибка клиента (400), тело запроса в журнал не пишем
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'bad_json', message: errText(req, 'Некорректный формат запроса') });
   // ошибки платёжного провайдера (yookassa.js): свой статус и понятный текст вместо «Внутренняя ошибка»
   if (typeof err.code === 'string' && /^provider_/.test(err.code) && err.status >= 400 && err.status < 600) return res.status(err.status).json({ error: err.code, message: errText(req, err.message) });
   console.error(err);
@@ -1691,6 +1846,11 @@ const server = app.listen(PORT, process.env.HOST || undefined, () => {
   const NAMES = { base_url: 'BASE_URL (https-адрес сайта)', admin: 'администратор (ADMIN_EMAIL)', email: 'отправка e-mail (SMTP_URL)', sms: 'отправка SMS (SMSRU_API_ID)', payments: 'приём оплаты ЮKassa (YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)', legal: 'реквизиты оператора (LEGAL_NAME, LEGAL_INN, LEGAL_OGRN, LEGAL_ADDRESS)', push: 'ключи push (VAPID_PUBLIC, VAPID_PRIVATE)', demo: 'в базе остались демо-пользователи' };
   const miss = readiness().filter((c) => !c.ok && NAMES[c.key]);
   if (miss.length) console.warn('ВНИМАНИЕ — не настроено для работы:\n' + miss.map((c) => '  • ' + NAMES[c.key]).join('\n') + '\nПодробности — README, раздел «Запуск в работу».');
+});
+// Порт занят (второй экземпляр) — короткое сообщение вместо стектрейса
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE' || e.code === 'EACCES') { console.error(e.code === 'EADDRINUSE' ? `Порт ${PORT} занят — сервер уже запущен?` : `Нет прав занять порт ${PORT}`); closeDb(); process.exit(1); }
+  throw e;
 });
 // Корректная остановка (Ctrl+C, systemd, pm2): дожидаемся запросов и закрываем БД с переносом журнала в app.db
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => {

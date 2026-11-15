@@ -32,7 +32,7 @@ const SECTIONS = () => [
 
 async function shell(view, sec, title, fn) {
   let totals = {};
-  try { totals = (await GET('/admin/stats')).totals; } catch (e) { /* noop */ }
+  try { totals = (await GET('/admin/badges')).totals; } catch (e) { /* noop */ } // лёгкий запрос: только счётчики меню
   // Навигация как в личном кабинете: на компьютере — колонка слева, на телефоне — одна кнопка текущего раздела
   // (с суммой счётчиков), по нажатию — лист со всеми разделами в две колонки.
   const secs = SECTIONS(), cur = secs.find(([k]) => k === sec) || secs[0];
@@ -59,7 +59,7 @@ const sec = (path, title, fn, opts = {}) => route('/admin' + (path ? '/' + path 
 const stackTables = () => document.querySelectorAll('#view table.t:not(.t-cards):not([data-lb])').forEach((tb) => {
   const hs = [...tb.querySelectorAll('thead th')].map((th) => th.textContent.trim());
   tb.dataset.lb = '1';
-  if (hs.length < 5) return;
+  if (hs.length < 5 && !tb.classList.contains('t-stack')) return;
   tb.classList.add('t-stack');
   tb.querySelectorAll('tbody tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (hs[i]) td.dataset.label = hs[i]; }));
 });
@@ -115,6 +115,8 @@ function sensitive(d) {
   const parts = [...(d.health || []).map((x) => optName('health', x)), d.health_note, d.disability ? tr('инвалидность', 'disability') + ': ' + optName('disability', d.disability) : '', d.nationality].filter(Boolean);
   return parts.length ? h`<div class="small"><b>${tr('Особые сведения — проверьте', 'Sensitive details — check')}:</b> ${parts.join('; ')}</div>` : '';
 }
+// номер телефона не рвётся посреди («+7 / 999…»); остальной текст (e-mail, длинные строки) переносится как обычно
+const nobr = (v) => /^\+?[\d\s()-]{5,20}$/.test(String(v || '')) ? h`<span style="white-space:nowrap">${v}</span>` : v;
 function modCard(a, actions) {
   return h`<div class="mod-card rise">
     <div class="thumb">${thumb(a)}</div>
@@ -125,7 +127,7 @@ function modCard(a, actions) {
       ${a.last_seen ? h`<div class="small"><b>${tr('Последнее местонахождение', 'Last seen')}:</b> ${a.last_seen}</div>` : ''}
       ${a.features ? h`<div class="small muted">${a.features}</div>` : ''}
       ${sensitive(a.details)}
-      <div class="xs muted">${a.address || a.city} · ${fmtDate(a.event_date)} · ${tr('автор', 'author')}: ${a.author_name} (${a.author_contact}) · ${tr('контакт', 'contact')}: ${a.contact}</div>
+      <div class="xs muted">${a.address || a.city} · ${fmtDate(a.event_date)} · ${tr('автор', 'author')}: ${a.author_name} (${nobr(a.author_contact)}) · ${tr('контакт', 'contact')}: ${nobr(a.contact)}</div>
     </div>
     <div class="acts">${actions}</div></div>`;
 }
@@ -157,7 +159,7 @@ sec('applications', () => tr('Все заявки', 'All reports'), async (el) =
   };
   mount(el, h`<form class="row-wrap" id="ff" style="margin-bottom:16px"><input class="input" name="q" placeholder="${tr('№, заголовок, ФИО', 'No., title, name')}" style="flex:1;min-width:180px">
     <select class="input" name="status" aria-label="${tr('Статус', 'Status')}" style="width:auto"><option value="">${tr('Все статусы', 'All statuses')}</option>${['pending', 'published', 'found', 'closed', 'rejected'].map((s) => h`<option value="${s}">${statusName(s)}</option>`)}</select>
-    <select class="input" name="category" aria-label="${tr('Категория', 'Category')}" style="width:auto"><option value="">${tr('Все категории', 'All categories')}</option>${['people', 'animals', 'things'].map((c) => h`<option value="${c}">${catName(c)}</option>`)}</select><button class="btn" aria-label="${tr('Найти', 'Search')}">${icon('search')}</button></form><div id="res"></div>`);
+    <select class="input" name="category" aria-label="${tr('Категория', 'Category')}" style="width:auto"><option value="">${tr('Все категории', 'All categories')}</option>${['people', 'animals', 'things'].map((c) => h`<option value="${c}">${catName(c)}</option>`)}</select><button class="btn btn-search" aria-label="${tr('Найти', 'Search')}">${icon('search')}</button></form><div id="res"></div>`);
   $('#ff', el).onsubmit = (e) => { e.preventDefault(); ({ q, status, category } = formData(e.target)); load(); };
   await load();
 });
@@ -221,17 +223,17 @@ sec('users', () => tr('Пользователи', 'Users'), async (el) => {
     const { items } = await GET('/admin/users?' + new URLSearchParams({ q, role }));
     mount($('#res', el), h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>№</th><th>${tr('Имя', 'Name')}</th><th>${tr('Контакты', 'Contacts')}</th><th>${tr('Роль', 'Role')}</th><th class="num">${tr('Баллы', 'Points')}</th><th class="num">${tr('Заявки', 'Reports')}</th><th></th></tr></thead><tbody>
       ${items.map((u) => h`<tr style="${u.blocked ? 'opacity:.55' : ''}"><td>${u.id}</td><td><b>${u.name}</b>${u.org_name ? h`<div class="xs muted">${u.org_name}</div>` : ''}<div class="xs muted">${u.city ? u.city + ' · ' : ''}${fmtDate(u.created_at)}</div></td><td class="small">${u.email ? h`<div>${u.email}</div>` : ''}${u.phone ? h`<div>${u.phone}</div>` : ''}</td>
-      <td>${isAdmin() && u.id !== state.user.id ? h`<select class="input" data-role="${u.id}" aria-label="${tr('Роль', 'Role')}" style="min-height:36px;padding:4px 30px 4px 10px;font-size:13px">${Object.entries(ROLES()).map(([k, v]) => h`<option value="${k}" ${u.role === k ? 'selected' : ''}>${v}</option>`)}</select>` : ROLES()[u.role]}</td>
+      <td>${isAdmin() && u.id !== state.user.id ? h`<select class="input" data-role="${u.id}" aria-label="${tr('Роль', 'Role')}" style="min-width:140px;min-height:36px;padding:4px 30px 4px 10px;font-size:13px">${Object.entries(ROLES()).map(([k, v]) => h`<option value="${k}" ${u.role === k ? 'selected' : ''}>${v}</option>`)}</select>` : ROLES()[u.role]}</td>
       <td class="num">${u.points}</td><td class="num">${u.apps}</td>
-      <td><div class="row" style="gap:6px"><button class="btn btn-ghost btn-xs" data-pts="${u.id}" title="${tr('Начислить баллы', 'Award points')}" aria-label="${tr('Начислить баллы', 'Award points')}">${icon('award', 'ic-sm')}</button>${u.role !== 'admin' && u.id !== state.user.id ? h`<button class="btn ${u.blocked ? 'btn-ghost' : 'btn-danger'} btn-xs" data-blk="${u.id}" data-v="${u.blocked ? 0 : 1}">${u.blocked ? tr('Разблок.', 'Unblock') : tr('Блок', 'Block')}</button>` : ''}</div></td></tr>`)}</tbody></table></div>`);
+      <td><div class="row" style="gap:6px"><button class="btn btn-ghost btn-xs btn-ic" data-pts="${u.id}" title="${tr('Начислить баллы', 'Award points')}" aria-label="${tr('Начислить баллы', 'Award points')}">${icon('award', 'ic-sm')}</button>${u.role !== 'admin' && u.id !== state.user.id ? h`<button class="btn ${u.blocked ? 'btn-ghost' : 'btn-danger'} btn-xs" data-blk="${u.id}" data-v="${u.blocked ? 0 : 1}">${u.blocked ? tr('Разблок.', 'Unblock') : tr('Блок', 'Block')}</button>` : ''}</div></td></tr>`)}</tbody></table></div>`);
     $$('[data-role]', el).forEach((s) => s.onchange = async () => { try { await PATCH('/admin/users/' + s.dataset.role, { role: s.value }); toast(tr('Роль изменена', 'Role changed')); } catch (e) { toastErr(e); load(); } });
     $$('[data-blk]', el).forEach((b) => b.onclick = async () => { try { await PATCH('/admin/users/' + b.dataset.blk, { blocked: b.dataset.v === '1' }); load(); } catch (e) { toastErr(e); } });
     $$('[data-pts]', el).forEach((b) => b.onclick = () => {
       const s = sheet(h`${sheetHead(tr('Начислить баллы', 'Award points'), tr('За подтверждённые находки и полезную информацию', 'For confirmed finds and useful information'))}<form class="stack"><label class="field"><span>${tr('Баллы (можно отрицательные)', 'Points (can be negative)')}</span><input name="points" type="number" value="20" required></label><label class="field"><span>${tr('Причина', 'Reason')}</span><input name="reason" required></label><button class="btn btn-block">${tr('Начислить', 'Award')}</button></form>`);
-      $('form', s.el).onsubmit = async (e) => { e.preventDefault(); try { await PATCH('/admin/users/' + b.dataset.pts, formData(e.target)); s.close(); load(); } catch (er) { toastErr(er); } };
+      $('form', s.el).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { try { await PATCH('/admin/users/' + b.dataset.pts, formData(e.target)); s.close(); load(); } catch (er) { toastErr(er); } } catch (er) { toastErr(er); } }); };
     });
   };
-  mount(el, h`<form class="row-wrap" id="uf" style="margin-bottom:16px"><input class="input" name="q" placeholder="${tr('Имя, e-mail, телефон, организация', 'Name, e-mail, phone, org')}" style="flex:1;min-width:200px"><select class="input" name="role" aria-label="${tr('Роль', 'Role')}" style="width:auto"><option value="">${tr('Все роли', 'All roles')}</option>${Object.entries(ROLES()).map(([k, v]) => h`<option value="${k}">${v}</option>`)}</select><button class="btn" aria-label="${tr('Найти', 'Search')}">${icon('search')}</button></form><div id="res"></div>`);
+  mount(el, h`<form class="row-wrap" id="uf" style="margin-bottom:16px"><input class="input" name="q" placeholder="${tr('Имя, e-mail, телефон, организация', 'Name, e-mail, phone, org')}" style="flex:1;min-width:200px"><select class="input" name="role" aria-label="${tr('Роль', 'Role')}" style="width:auto"><option value="">${tr('Все роли', 'All roles')}</option>${Object.entries(ROLES()).map(([k, v]) => h`<option value="${k}">${v}</option>`)}</select><button class="btn btn-search" aria-label="${tr('Найти', 'Search')}">${icon('search')}</button></form><div id="res"></div>`);
   $('#uf', el).onsubmit = (e) => { e.preventDefault(); ({ q, role } = formData(e.target)); load(); };
   await load();
 });
@@ -243,8 +245,8 @@ sec('roles', () => tr('Заявки волонтёров и партнёров',
       <b>${r.name}${r.org_name ? ` — ${r.org_name}` : ''}</b>${r.org_type ? h`<div class="small muted">${r.org_type}</div>` : ''}
       <div class="small">${r.details}</div><div class="xs muted">${r.email || ''} ${r.phone || ''} · ${r.city || ''} · ${tr('зона', 'zone')}: ${r.zone_radius} ${tr('км', 'km')}</div>
       ${r.status === 'pending' ? h`<div class="row"><button class="btn btn-sm" data-ok="${r.id}">${icon('check')}${tr('Одобрить', 'Approve')}</button><button class="btn btn-ghost btn-sm" data-no="${r.id}">${tr('Отклонить', 'Reject')}</button></div>` : ''}</div>`)}</div>` : emptyBox(tr('Заявок нет', 'No requests')));
-    $$('[data-ok]', el).forEach((b) => b.onclick = async () => { await POST('/admin/role-requests/' + b.dataset.ok, { action: 'approve' }); load(); });
-    $$('[data-no]', el).forEach((b) => b.onclick = async () => { const reason = await confirmBox(tr('Отклонить заявку', 'Reject'), '', { input: tr('Причина', 'Reason') }); if (reason === null) return; await POST('/admin/role-requests/' + b.dataset.no, { action: 'reject', reason }); load(); });
+    $$('[data-ok]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { await POST('/admin/role-requests/' + b.dataset.ok, { action: 'approve' }); load(); } catch (e) { toastErr(e); load(); } }));
+    $$('[data-no]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { const reason = await confirmBox(tr('Отклонить заявку', 'Reject'), '', { input: tr('Причина', 'Reason') }); if (reason === null) return; await POST('/admin/role-requests/' + b.dataset.no, { action: 'reject', reason }); load(); } catch (e) { toastErr(e); load(); } }));
   };
   await load();
 });
@@ -254,7 +256,7 @@ sec('deletion', () => tr('Запросы на удаление', 'Removal reques
     mount(el, h`<div class="note" style="margin-bottom:16px">${icon('trash')}<div>${tr('Заявка удаляется по требованию автора или человека, о котором она подана. Проверьте личность заявителя перед удалением.', 'A report is removed at the request of its author or the person it concerns. Verify the requester\'s identity.')}</div></div>
       ${items.length ? h`<div class="stack">${items.map((d) => h`<div class="card pad stack" style="${d.status !== 'open' ? 'opacity:.6' : ''}"><b>${d.title ? h`<a class="link" href="#/a/${d.application_id}">№${d.application_id} · ${d.title}</a>` : tr('Заявка уже удалена', 'Already deleted')}</b><div class="small">${d.name} · ${d.contact}</div><div class="small muted">${d.reason}</div>
       ${d.status === 'open' && d.title ? h`<div class="row"><button class="btn btn-danger btn-sm" data-d="${d.id}" data-a="delete">${tr('Удалить заявку', 'Delete report')}</button><button class="btn btn-ghost btn-sm" data-d="${d.id}" data-a="reject">${tr('Отклонить', 'Reject')}</button></div>` : ''}</div>`)}</div>` : emptyBox(tr('Запросов нет', 'No requests'))}`);
-    $$('[data-d]', el).forEach((b) => b.onclick = async () => { await POST('/admin/deletion/' + b.dataset.d, { action: b.dataset.a }); load(); });
+    $$('[data-d]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { await POST('/admin/deletion/' + b.dataset.d, { action: b.dataset.a }); load(); } catch (e) { toastErr(e); load(); } }));
   };
   await load();
 });
@@ -279,20 +281,22 @@ sec('support', () => tr('Обращения в поддержку', 'Support tic
   await load();
   onLeave(onEvent((type) => { if (type === 'ticket') load().catch(() => {}); }));
 });
-route('/admin/support/:id', (view, p) => ticketView(view, p.id, true), { auth: true, mod: true });
+// переписка по обращению — внутри общей рамки админ-панели (меню разделов и шапка как у остальных разделов)
+route('/admin/support/:id', (view, p) => shell(view, 'support', tr('Обращения в поддержку', 'Support tickets'), (el) => ticketView(el, p.id, true)), { auth: true, mod: true });
 sec('leads', () => tr('Партнёры и инвесторы', 'Partner & investor leads'), async (el) => {
   const load = async () => {
     const { items } = await GET('/admin/leads');
     mount(el, items.length ? h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>${tr('Дата', 'Date')}</th><th>${tr('Тип', 'Type')}</th><th>${tr('Имя', 'Name')}</th><th>${tr('Контакт', 'Contact')}</th><th>${tr('Организация / сообщение', 'Org / message')}</th><th></th></tr></thead><tbody>
       ${items.map((l) => h`<tr style="${l.status !== 'new' ? 'opacity:.6' : ''}"><td>${fmtDate(l.created_at, true)}</td><td><span class="chip ${l.kind === 'investor' ? 'chip-found' : 'chip-ok'}">${l.kind === 'investor' ? tr('Инвестор', 'Investor') : tr('Партнёр', 'Partner')}</span></td><td><b>${l.name}</b></td><td>${l.contact}</td><td class="small">${l.org}<div class="muted">${l.message}</div></td><td>${l.status === 'new' ? h`<button class="btn btn-ghost btn-xs" data-l="${l.id}">${tr('Обработано', 'Done')}</button>` : ''}</td></tr>`)}</tbody></table></div>` : emptyBox(tr('Заявок нет', 'No leads')));
-    $$('[data-l]', el).forEach((b) => b.onclick = async () => { await POST('/admin/leads/' + b.dataset.l, { status: 'done' }); load(); });
+    $$('[data-l]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { await POST('/admin/leads/' + b.dataset.l, { status: 'done' }); load(); } catch (e) { toastErr(e); load(); } }));
   };
   await load();
 });
 sec('payments', () => tr('Платежи', 'Payments'), async (el) => {
+  const PS = { pending: [tr('Ожидает', 'Pending'), 'chip-warn'], succeeded: [tr('Оплачен', 'Paid'), 'chip-ok'], canceled: [tr('Отменён', 'Canceled'), ''] };
   const { items } = await GET('/admin/payments');
   mount(el, items.length ? h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>№</th><th>${tr('Дата', 'Date')}</th><th>${tr('Пользователь', 'User')}</th><th>${tr('Тариф', 'Plan')}</th><th>${tr('Способ', 'Method')}</th><th class="num">${tr('Сумма', 'Amount')}</th><th>${tr('Статус', 'Status')}</th></tr></thead><tbody>
-    ${items.map((p) => h`<tr><td>${p.id}</td><td>${fmtDate(p.created_at, true)}</td><td>${p.name}</td><td>${p.name_ru}${p.auto ? ' (авто)' : ''}</td><td>${{ card: tr('Карта', 'Card'), sbp: tr('СБП', 'SBP'), saved_card: tr('Сохр. карта', 'Saved card') }[p.method]}</td><td class="num"><b>${money(p.amount)}</b>${p.discount ? h`<div class="xs muted">−${p.discount}%</div>` : ''}</td><td><span class="chip ${p.status === 'succeeded' ? 'chip-ok' : p.status === 'pending' ? 'chip-warn' : ''}">${p.status}</span></td></tr>`)}</tbody></table></div>` : emptyBox(tr('Платежей нет', 'No payments')));
+    ${items.map((p) => h`<tr><td>${p.id}</td><td>${fmtDate(p.created_at, true)}</td><td>${p.name}</td><td>${p.name_ru}${p.auto ? ' (авто)' : ''}</td><td>${{ card: tr('Карта', 'Card'), sbp: tr('СБП', 'SBP'), saved_card: tr('Сохр. карта', 'Saved card') }[p.method]}</td><td class="num"><b>${money(p.amount)}</b>${p.discount ? h`<div class="xs muted">−${p.discount}%</div>` : ''}</td><td><span class="chip ${(PS[p.status] || ['', ''])[1]}">${(PS[p.status] || [p.status])[0]}</span></td></tr>`)}</tbody></table></div>` : emptyBox(tr('Платежей нет', 'No payments')));
 });
 
 /* ---------- только администратор ---------- */
@@ -300,7 +304,7 @@ sec('tariffs', () => tr('Тарифы', 'Plans'), async (el, act) => {
   const load = async () => {
     const { items } = await GET('/admin/tariffs');
     mount(el, h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>${tr('Название', 'Name')}</th><th>${tr('Для кого', 'Audience')}</th><th>${tr('Функция', 'Feature')}</th><th class="num">${tr('Цена', 'Price')}</th><th class="num">${tr('Период', 'Period')}</th><th>${tr('Активен', 'Active')}</th><th></th></tr></thead><tbody>
-      ${items.map((x) => h`<tr><td><b>${x.name_ru}</b><div class="xs muted">${x.name_en}</div></td><td>${x.audience === 'partner' ? tr('Партнёры', 'Partners') : tr('Пользователи', 'Users')}</td><td><code>${x.feature}</code></td><td class="num">${money(x.price)}</td><td class="num">${x.period_days} ${tr('дн.', 'd')}</td><td>${x.active ? '✓' : '—'}</td><td><button class="btn btn-ghost btn-xs" data-ed="${x.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button></td></tr>`)}</tbody></table></div>`);
+      ${items.map((x) => h`<tr><td><b>${x.name_ru}</b><div class="xs muted">${x.name_en}</div></td><td>${x.audience === 'partner' ? tr('Партнёры', 'Partners') : tr('Пользователи', 'Users')}</td><td><code>${x.feature}</code></td><td class="num">${money(x.price)}</td><td class="num">${x.period_days} ${tr('дн.', 'd')}</td><td>${x.active ? '✓' : '—'}</td><td><button class="btn btn-ghost btn-xs btn-ic" data-ed="${x.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button></td></tr>`)}</tbody></table></div>`);
     $$('[data-ed]', el).forEach((b) => b.onclick = () => form(items.find((x) => x.id === +b.dataset.ed)));
   };
   const form = (x = { audience: 'user', feature: 'registry', period_days: 30, active: 1 }) => {
@@ -311,7 +315,7 @@ sec('tariffs', () => tr('Тарифы', 'Plans'), async (el, act) => {
       <div class="grid-2"><label class="field"><span>${tr('Для кого', 'Audience')}</span><select name="audience"><option value="user" ${x.audience === 'user' ? 'selected' : ''}>${tr('Пользователи', 'Users')}</option><option value="partner" ${x.audience === 'partner' ? 'selected' : ''}>${tr('Партнёры', 'Partners')}</option></select></label>
       <label class="field"><span>${tr('Функция', 'Feature')}</span><select name="feature">${[['registry', tr('Расширенный реестр', 'Extended registry')], ['promote', tr('Продвижение заявки', 'Boost report')], ['search_plus', tr('Расширенный поиск совпадений', 'Extended match search')], ['partner', tr('Тариф партнёра', 'Partner plan')]].map(([k, v]) => h`<option value="${k}" ${x.feature === k ? 'selected' : ''}>${v}</option>`)}</select></label></div>
       <label class="check"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> ${tr('Активен', 'Active')}</label><button class="btn btn-block">${tr('Сохранить', 'Save')}</button></form>`);
-    $('form', s.el).onsubmit = async (e) => { e.preventDefault(); try { await POST('/admin/tariffs', Object.assign(formData(e.target), { id: x.id })); s.close(); load(); } catch (er) { toastErr(er); } };
+    $('form', s.el).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { try { await POST('/admin/tariffs', Object.assign(formData(e.target), { id: x.id })); s.close(); load(); } catch (er) { toastErr(er); } } catch (er) { toastErr(er); } }); };
   };
   mount(act, h`<button class="btn btn-sm" id="nt">${icon('plus')}${tr('Тариф', 'Plan')}</button>`); $('#nt', act).onclick = () => form();
   await load();
@@ -321,14 +325,14 @@ sec('dicts', () => tr('Справочники', 'Dictionaries'), async (el) => {
   const load = async () => {
     const { items } = await GET('/admin/dicts');
     mount(el, h`<div class="grid-2" style="gap:14px;align-items:start">${Object.entries(DICT_T()).map(([type, name]) => h`<div class="card pad stack"><h3 style="font-size:16px">${name}</h3>
-      <div class="list">${items.filter((d) => d.type === type).map((d) => h`<div><div class="grow"><b>${d.value_ru}</b> <span class="muted small">/ ${d.value_en}</span></div><button class="btn btn-ghost btn-xs" data-ed="${d.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs" data-rm="${d.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>
+      <div class="list">${items.filter((d) => d.type === type).map((d) => h`<div><div class="grow"><b>${d.value_ru}</b> <span class="muted small">/ ${d.value_en}</span></div><button class="btn btn-ghost btn-xs btn-ic" data-ed="${d.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs btn-ic" data-rm="${d.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>
       <form class="row" data-add="${type}"><input class="input" name="value_ru" placeholder="RU" required style="min-height:40px"><input class="input" name="value_en" placeholder="EN" style="min-height:40px"><button class="btn btn-sm" aria-label="${tr('Добавить', 'Add')}">${icon('plus')}</button></form></div>`)}</div>`);
-    $$('[data-add]', el).forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); await POST('/admin/dicts', Object.assign(formData(f), { type: f.dataset.add })); load(); });
-    $$('[data-rm]', el).forEach((b) => b.onclick = async () => { if (await confirmBox(tr('Удалить значение?', 'Delete value?'), '', { danger: true })) { await DEL('/admin/dicts/' + b.dataset.rm); load(); } });
+    $$('[data-add]', el).forEach((f) => f.onsubmit = (e) => { e.preventDefault(); busy(e.submitter || $('button', f), async () => { try { await POST('/admin/dicts', Object.assign(formData(f), { type: f.dataset.add })); f.reset(); load(); } catch (er) { toastErr(er); } }); });
+    $$('[data-rm]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { if (await confirmBox(tr('Удалить значение?', 'Delete value?'), '', { danger: true })) { await DEL('/admin/dicts/' + b.dataset.rm); load(); } } catch (e) { toastErr(e); load(); } }));
     $$('[data-ed]', el).forEach((b) => b.onclick = () => {
       const d = items.find((x) => x.id === +b.dataset.ed);
       const s = sheet(h`${sheetHead(tr('Изменить значение', 'Edit value'))}<form class="stack"><label class="field"><span>RU</span><input name="value_ru" value="${d.value_ru}" required></label><label class="field"><span>EN</span><input name="value_en" value="${d.value_en}"></label><label class="field"><span>${tr('Порядок', 'Order')}</span><input name="sort" type="number" value="${d.sort}"></label><button class="btn btn-block">${tr('Сохранить', 'Save')}</button></form>`);
-      $('form', s.el).onsubmit = async (e) => { e.preventDefault(); await POST('/admin/dicts', Object.assign(formData(e.target), { id: d.id, type: d.type })); s.close(); load(); };
+      $('form', s.el).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { await POST('/admin/dicts', Object.assign(formData(e.target), { id: d.id, type: d.type })); s.close(); load(); } catch (er) { toastErr(er); } }); };
     });
   };
   await load();
@@ -359,8 +363,8 @@ sec('translations', () => tr('Переводы и тексты', 'Translations &
     const list = [...keys.entries()].filter(([k, v]) => !filter || (k + ' ' + v.ru + ' ' + v.en + ' ' + (ov[k + ':ru'] || '') + ' ' + (ov[k + ':en'] || '')).toLowerCase().includes(filter));
     const pages = Math.max(1, Math.ceil(list.length / PER)); page = Math.min(page, pages - 1);
     const pager = pages > 1 ? h`<div class="row" style="justify-content:center;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" data-pg="${page - 1}" ${page ? '' : 'disabled'} aria-label="${tr('Предыдущая страница', 'Previous page')}">${icon('chevL', 'ic-sm')}</button><span class="small muted">${tr('Страница', 'Page')} ${page + 1} ${tr('из', 'of')} ${pages}</span><button class="btn btn-ghost btn-sm" data-pg="${page + 1}" ${page < pages - 1 ? '' : 'disabled'} aria-label="${tr('Следующая страница', 'Next page')}">${icon('chevR', 'ic-sm')}</button></div>` : '';
-    mount($('#res', el), h`<p class="small muted" style="margin-bottom:10px">${tr('Ключей', 'Keys')}: ${list.length} · ${tr('изменено', 'overridden')}: ${items.length}</p><div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>${tr('Ключ', 'Key')}</th><th>Русский</th><th>English</th><th></th></tr></thead><tbody>
-      ${list.slice(page * PER, page * PER + PER).map(([k, v]) => h`<tr><td><code class="xs">${k}</code></td><td class="small" style="${ov[k + ':ru'] ? 'color:var(--blue);font-weight:700' : ''}">${ov[k + ':ru'] || v.ru}</td><td class="small" style="${ov[k + ':en'] ? 'color:var(--blue);font-weight:700' : ''}">${ov[k + ':en'] || v.en}</td><td><button class="btn btn-ghost btn-xs" data-k="${k}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button></td></tr>`)}</tbody></table></div>${pager}`);
+    mount($('#res', el), h`<p class="small muted" style="margin-bottom:10px">${tr('Ключей', 'Keys')}: ${list.length} · ${tr('изменено', 'overridden')}: ${items.length}</p><div class="table-wrap" tabindex="0"><table class="t t-stack"><thead><tr><th>${tr('Ключ', 'Key')}</th><th>Русский</th><th>English</th><th></th></tr></thead><tbody>
+      ${list.slice(page * PER, page * PER + PER).map(([k, v]) => h`<tr><td><code class="xs">${k}</code></td><td class="small" style="${ov[k + ':ru'] ? 'color:var(--blue);font-weight:700' : ''}">${ov[k + ':ru'] || v.ru}</td><td class="small" style="${ov[k + ':en'] ? 'color:var(--blue);font-weight:700' : ''}">${ov[k + ':en'] || v.en}</td><td><button class="btn btn-ghost btn-xs btn-ic" data-k="${k}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button></td></tr>`)}</tbody></table></div>${pager}`);
     $$('[data-pg]', el).forEach((b) => b.onclick = () => { page = +b.dataset.pg; draw(); $('#tf', el).scrollIntoView({ block: 'start' }); });
     $$('[data-k]', el).forEach((b) => b.onclick = () => {
       const k = b.dataset.k, v = keys.get(k);
@@ -383,9 +387,9 @@ sec('translations', () => tr('Переводы и тексты', 'Translations &
 sec('stories', () => tr('Истории успешных находок', 'Success stories'), async (el, act) => {
   const load = async () => {
     const { items } = await GET('/admin/stories');
-    mount(el, h`<div class="stack">${items.map((s) => h`<div class="card pad row" style="align-items:flex-start"><div class="grow"><div class="row-wrap"><span class="chip">${catName(s.category)}</span>${s.published ? '' : h`<span class="chip chip-warn">${tr('Скрыта', 'Hidden')}</span>`}</div><b style="display:block;margin-top:8px">${s.title_ru}</b><div class="small muted">${s.text_ru}</div></div><button class="btn btn-ghost btn-xs" data-ed="${s.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs" data-rm="${s.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>`);
+    mount(el, h`<div class="stack">${items.map((s) => h`<div class="card pad row" style="align-items:flex-start"><div class="grow"><div class="row-wrap"><span class="chip">${catName(s.category)}</span>${s.published ? '' : h`<span class="chip chip-warn">${tr('Скрыта', 'Hidden')}</span>`}</div><b style="display:block;margin-top:8px">${s.title_ru}</b><div class="small muted">${s.text_ru}</div></div><button class="btn btn-ghost btn-xs btn-ic" data-ed="${s.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs btn-ic" data-rm="${s.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>`);
     $$('[data-ed]', el).forEach((b) => b.onclick = () => form(items.find((x) => x.id === +b.dataset.ed)));
-    $$('[data-rm]', el).forEach((b) => b.onclick = async () => { if (await confirmBox(tr('Удалить историю?', 'Delete story?'), '', { danger: true })) { await DEL('/admin/stories/' + b.dataset.rm); load(); } });
+    $$('[data-rm]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { if (await confirmBox(tr('Удалить историю?', 'Delete story?'), '', { danger: true })) { await DEL('/admin/stories/' + b.dataset.rm); load(); } } catch (e) { toastErr(e); load(); } }));
   };
   const form = (x = { category: 'people', published: 1 }) => {
     const s = sheet(h`${sheetHead(x.id ? tr('Изменить историю', 'Edit story') : tr('Новая история', 'New story'))}<form class="stack">
@@ -393,7 +397,7 @@ sec('stories', () => tr('Истории успешных находок', 'Succe
       <div class="grid-2"><label class="field"><span>${tr('Заголовок (RU)', 'Title (RU)')}</span><input name="title_ru" value="${x.title_ru || ''}" required></label><label class="field"><span>${tr('Заголовок (EN)', 'Title (EN)')}</span><input name="title_en" value="${x.title_en || ''}"></label></div>
       <label class="field"><span>${tr('Текст (RU)', 'Text (RU)')}</span><textarea name="text_ru" rows="3" required>${x.text_ru || ''}</textarea></label><label class="field"><span>${tr('Текст (EN)', 'Text (EN)')}</span><textarea name="text_en" rows="3">${x.text_en || ''}</textarea></label>
       <label class="check"><input type="checkbox" name="published" ${x.published ? 'checked' : ''}> ${tr('Опубликована', 'Published')}</label><button class="btn btn-block">${tr('Сохранить', 'Save')}</button></form>`, { wide: true });
-    $('form', s.el).onsubmit = async (e) => { e.preventDefault(); try { await POST('/admin/stories', Object.assign(formData(e.target), { id: x.id })); s.close(); load(); } catch (er) { toastErr(er); } };
+    $('form', s.el).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { try { await POST('/admin/stories', Object.assign(formData(e.target), { id: x.id })); s.close(); load(); } catch (er) { toastErr(er); } } catch (er) { toastErr(er); } }); };
   };
   mount(act, h`<button class="btn btn-sm" id="ns">${icon('plus')}${tr('История', 'Story')}</button>`); $('#ns', act).onclick = () => form();
   await load();
@@ -407,10 +411,10 @@ sec('ads', () => tr('Рекламная строка', 'Ad strip'), async (el, a
         <div class="row-wrap"><span class="chip">№ ${a.sort}</span>${a.active ? h`<span class="chip chip-ok">${tr('Показывается', 'Live')}</span>` : h`<span class="chip chip-warn">${tr('Скрыто', 'Hidden')}</span>`}${a.erid ? h`<span class="chip">erid: ${a.erid}</span>` : ''}</div>
         <b style="display:block;margin-top:8px">${a.text_ru}</b>${a.text_en ? h`<div class="small muted">${a.text_en}</div>` : ''}
         <a class="small" href="${a.url}" target="_blank" rel="noopener" style="overflow-wrap:anywhere">${host(a.url)}</a>${a.advertiser ? h`<span class="small muted"> · ${a.advertiser}</span>` : ''}</div>
-        <button class="btn btn-ghost btn-xs" data-ed="${a.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs" data-rm="${a.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>`
+        <button class="btn btn-ghost btn-xs btn-ic" data-ed="${a.id}" aria-label="${tr('Изменить', 'Edit')}">${icon('edit', 'ic-sm')}</button><button class="btn btn-ghost btn-xs btn-ic" data-rm="${a.id}" aria-label="${tr('Удалить', 'Delete')}">${icon('trash', 'ic-sm')}</button></div>`)}</div>`
       : h`<div class="empty card pad"><p class="muted">${tr('Объявлений нет — строка на главной скрыта.', 'No ads — the strip is hidden on the home page.')}</p></div>`}`);
     $$('[data-ed]', el).forEach((b) => b.onclick = () => form(items.find((x) => x.id === +b.dataset.ed)));
-    $$('[data-rm]', el).forEach((b) => b.onclick = async () => { if (await confirmBox(tr('Удалить объявление?', 'Delete ad?'), '', { danger: true })) { await DEL('/admin/ads/' + b.dataset.rm); load(); } });
+    $$('[data-rm]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { if (await confirmBox(tr('Удалить объявление?', 'Delete ad?'), '', { danger: true })) { await DEL('/admin/ads/' + b.dataset.rm); load(); } } catch (e) { toastErr(e); load(); } }));
   };
   const form = (x = { active: 1, sort: 10, url: 'https://' }) => {
     const s = sheet(h`${sheetHead(x.id ? tr('Изменить объявление', 'Edit ad') : tr('Новое объявление', 'New ad'))}<form class="stack">
@@ -420,7 +424,7 @@ sec('ads', () => tr('Рекламная строка', 'Ad strip'), async (el, a
       <div class="grid-2"><label class="field"><span>${tr('Рекламодатель', 'Advertiser')}</span><input name="advertiser" value="${x.advertiser || ''}" maxlength="120"></label><label class="field"><span>${tr('Токен erid (если есть)', 'erid token (if any)')}</span><input name="erid" value="${x.erid || ''}" maxlength="64" autocomplete="off"></label></div>
       <div class="grid-2"><label class="field"><span>${tr('Порядок показа', 'Order')}</span><input name="sort" type="number" min="0" max="999" value="${x.sort ?? 10}"></label><label class="check" style="align-self:end;min-height:48px"><input type="checkbox" name="active" ${x.active ? 'checked' : ''}> ${tr('Показывать', 'Show')}</label></div>
       <button class="btn btn-block">${tr('Сохранить', 'Save')}</button></form>`, { wide: true });
-    $('form', s.el).onsubmit = async (e) => { e.preventDefault(); try { await POST('/admin/ads', Object.assign(formData(e.target), { id: x.id })); s.close(); toast(tr('Сохранено. На главной — после обновления страницы', 'Saved. Shows on the home page after a reload')); load(); } catch (er) { toastErr(er); } };
+    $('form', s.el).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { try { await POST('/admin/ads', Object.assign(formData(e.target), { id: x.id })); s.close(); toast(tr('Сохранено. На главной — после обновления страницы', 'Saved. Shows on the home page after a reload')); load(); } catch (er) { toastErr(er); } } catch (er) { toastErr(er); } }); };
   };
   mount(act, h`<button class="btn btn-sm" id="nad">${icon('plus')}${tr('Объявление', 'Ad')}</button>`); $('#nad', act).onclick = () => form();
   await load();
@@ -457,7 +461,8 @@ sec('outbox', () => tr('Исходящие e-mail и SMS', 'Outgoing e-mail & SM
   const { items } = await GET('/admin/outbox');
   const ST = { sent: [tr('отправлено', 'sent'), 'chip-ok'], failed: [tr('ошибка', 'failed'), 'chip-lost'], queued: [tr('отправляется', 'sending'), 'chip-warn'], logged: [tr('только журнал', 'log only'), ''] };
   mount(el, h`<p class="muted small" style="margin-bottom:14px">${tr('Журнал писем и SMS за последний год. Одноразовые коды в журнале скрыты.', 'Log of e-mails and SMS for the last year. One-time codes are hidden.')}</p>
-    ${items.length ? h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>${tr('Время', 'Time')}</th><th>${tr('Канал', 'Channel')}</th><th>${tr('Кому', 'To')}</th><th>${tr('Текст', 'Text')}</th><th>${tr('Статус', 'Status')}</th></tr></thead><tbody>${items.map((o) => h`<tr><td class="xs">${fmtDate(o.created_at, true)}</td><td><span class="chip">${o.channel === 'sms' ? 'SMS' : 'E-mail'}</span></td><td class="small">${o.target}</td><td class="small"><b>${o.subject}</b><div class="muted" style="white-space:pre-wrap">${o.body}</div></td><td><span class="chip ${(ST[o.status] || ST.logged)[1]}">${(ST[o.status] || ST.logged)[0]}</span>${o.error ? h`<div class="xs muted" style="max-width:220px">${o.error}</div>` : ''}</td></tr>`)}</tbody></table></div>` : emptyBox(tr('Пусто', 'Empty'))}`);
+    ${items.length ? h`<div class="table-wrap" tabindex="0"><table class="t"><thead><tr><th>${tr('Время', 'Time')}</th><th>${tr('Канал', 'Channel')}</th><th>${tr('Кому', 'To')}</th><th>${tr('Текст', 'Text')}</th><th>${tr('Статус', 'Status')}</th></tr></thead><tbody>${items.map((o) => h`<tr><td class="xs">${fmtDate(o.created_at, true)}</td><td><span class="chip">${o.channel === 'sms' ? 'SMS' : 'E-mail'}</span></td><td class="small" style="max-width:240px;overflow-wrap:anywhere">${o.target}</td><td class="small" style="min-width:240px"><b>${o.subject}</b><div class="muted clamp4" data-clamp title="${tr('Нажмите, чтобы развернуть', 'Click to expand')}">${o.body}</div></td><td><span class="chip ${(ST[o.status] || ST.logged)[1]}">${(ST[o.status] || ST.logged)[0]}</span>${o.error ? h`<div class="xs muted" style="max-width:220px">${o.error}</div>` : ''}</td></tr>`)}</tbody></table></div>` : emptyBox(tr('Пусто', 'Empty'))}`);
+  $$('[data-clamp]', el).forEach((d) => d.onclick = () => d.classList.toggle('open'));
 }, { admin: true });
 sec('audit', () => tr('Журнал действий', 'Audit log'), async (el) => {
   const { items } = await GET('/admin/audit');

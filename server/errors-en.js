@@ -2,6 +2,17 @@
 // Тексты ошибок API на английском: сервер пишет их по-русски, а для английского интерфейса (заголовок X-Lang: en)
 // обработчик ошибок подменяет текст по этому словарю. Новую ошибку — добавить сюда же (тест проверяет, что перевод есть у всех).
 const EN = {
+  'Вход временно недоступен. Попробуйте позже или напишите в поддержку.': 'Sign-in is temporarily unavailable. Please try again later or contact support.',
+  'Заявку изменили в другой вкладке — обновите страницу': 'The report was changed in another tab — please reload the page',
+  'Фото не найдено — загрузите его заново': 'Photo not found — please upload it again',
+  'История не найдена': 'Story not found',
+  'Участник не найден': 'Member not found',
+  'Подписка не найдена': 'Subscription not found',
+  'Сессия завершена — войдите снова': 'Your session has ended — please sign in again',
+  'Проверьте дату рождения': 'Check your date of birth',
+  'Укажите дату рождения': 'Enter your date of birth',
+  'Заявка удалена или снята с публикации — оплата отменена, деньги не списаны': 'The report was deleted or unpublished — the payment was canceled and you were not charged',
+  'Некорректный формат запроса': 'Invalid request format',
   'Выберите страну из списка': 'Choose a country from the list',
   'Совпадение не найдено': 'Match not found',
   'Ответ: «это оно» или «не то»': 'Answer “this is it” or “not it”',
@@ -10,6 +21,7 @@ const EN = {
   'Проверка уже пройдена': 'The check has already been passed',
   'Попытки закончились. Договоритесь с автором заявки в чате': 'No attempts left. Please agree with the report author in the chat',
   'Напишите примету': 'Describe the detail',
+  'Назовите примету коротко, своими словами': 'Describe the detail briefly, in your own words',
   'Карточка не найдена': 'Card not found',
   'Тип карточки': 'Card type',
   'Укажите имя': 'Enter a name',

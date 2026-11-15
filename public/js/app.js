@@ -1,7 +1,8 @@
 // Точка входа: оболочка (шапка, нижнее меню, подвал), язык, тема, realtime, PWA.
-import { state, t, tr, h, raw, mount, $, $$, icon, GET, refreshMe, handleRoute, setChrome, currentPath, connectStream, onEvent, toast, go, observeReveal, emergencyPhones, sosSheet, syncPush, appBadge } from './core.js';
+import { state, t, tr, h, raw, mount, $, $$, icon, GET, refreshMe, handleRoute, setChrome, currentPath, connectStream, onEvent, toast, go, observeReveal, emergencyPhones, sosSheet, syncPush, appBadge, lazyRoutes } from './core.js';
 import { setLang } from './views.js';
-import './admin.js';
+// админ-модуль грузится при первом заходе в #/admin — гостям и пользователям он не нужен
+lazyRoutes('/admin', () => import('./admin.js'));
 
 const chrome = () => {
   const u = state.user, p = currentPath();
@@ -148,6 +149,13 @@ async function boot() {
     if (type === 'message' && !location.hash.startsWith('#/chat/' + d.chat_id)) refreshMe().catch(() => {});
   });
   addEventListener('hashchange', handleRoute);
+  addEventListener('unhandledrejection', (e) => { const r = e.reason; if (r && r.name === 'AbortError') return; toast((r && r.message) || tr('Что-то пошло не так. Попробуйте ещё раз', 'Something went wrong. Please try again'), 'err'); });
+  // вышли из аккаунта в другой вкладке — здесь тоже убираем личные данные
+  addEventListener('storage', (ev) => {
+    if (ev.key !== 'mba.logout' || !state.user) return;
+    state.user = null; connectStream(); chrome();
+    go(/^#\/(me|chat|chats|notifications|support|new|edit|ward|admin|pay)\b/.test(location.hash) ? '#/login?next=' + encodeURIComponent(location.hash) : '#/');
+  });
   await handleRoute();
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

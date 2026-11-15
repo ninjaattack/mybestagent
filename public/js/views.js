@@ -46,7 +46,7 @@ export function appRow(a, right = '') {
       ${a.status !== 'published' ? h`<span class="chip ${statusChip(a.status)}" style="height:22px;font-size:11px">${statusName(a.status)}</span>` : ''}
       ${a.emergency ? h`<span class="chip chip-em" style="height:22px;font-size:11px">SOS</span>` : ''}
     </div><h4>${a.title}</h4>
-    <div class="meta"><span>${catName(a.category)}</span><span>${a.address || a.city || ''}</span>${a.distance != null ? h`<span>${km(a.distance)}</span>` : ''}<span>${ago(a.created_at)}</span></div></div>
+    <div class="meta"><span>${catName(a.category)}</span>${a.address || a.city ? h`<span>${a.address || a.city}</span>` : ''}${a.distance != null ? h`<span>${km(a.distance)}</span>` : ''}<span>${ago(a.created_at)}</span></div></div>
     ${right || icon('chevR')}</a>`;
 }
 const skeletons = (n = 4) => h`<div class="apps">${Array.from({ length: n }, () => h`<div class="sk sk-card"></div>`)}</div>`;
@@ -127,7 +127,7 @@ route('/', async (view) => {
           <option value="people">${catName('people')}</option><option value="animals">${catName('animals')}</option><option value="things">${catName('things')}</option>
         </select></label>
         <label class="bs-in">${icon('search')}<span class="sr">${tr('Поиск по заявкам', 'Search reports')}</span><input name="q" type="search" enterkeyhint="search" autocomplete="off" placeholder="${t('home.search_ph', 'Кличка, приметы, улица или район', 'Name, features, street or area')}"></label>
-        <button class="btn btn-search">${icon('search', 'ic-sm')}${t('home.search_btn', 'Найти', 'Search')}</button>
+        <button class="btn btn-search">${icon('search', 'ic-sm')}<span>${t('home.search_btn', 'Найти', 'Search')}</span></button>
       </form>
       <div class="hero-stats rise" style="--i:3" id="heroStats">
         <div><b data-count="0">0</b><span>${t('home.st_active', 'активных заявок', 'active reports')}</span></div>
@@ -160,7 +160,7 @@ route('/', async (view) => {
       <div class="promo promo-light reveal" style="--i:1">
         <span class="promo-tx"><b>${t('home.reg', 'Реестр ценностей и антиквариата', 'Valuables & antiques registry')}</b>
           <span>${t('home.reg_t', 'Добавьте ценные вещи заранее. Перед покупкой проверьте — не краденое ли.', 'Add valuables in advance. Before buying, check it isn’t stolen.')}</span>
-          <form class="search-box" id="regForm">${icon('search')}<input name="q" aria-label="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" placeholder="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" minlength="3" required><button class="fbtn fbtn-search" aria-label="${tr('Проверить', 'Check')}">${icon('chevR')}</button></form></span>
+          <form class="search-box" id="regForm">${icon('search')}<input name="q" aria-label="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" placeholder="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" minlength="3" required><button class="fbtn fbtn-search" aria-label="${tr('Проверить', 'Check')}">${icon('search')}</button></form></span>
       </div>
     </div>
 
@@ -310,7 +310,7 @@ route('/map', async (view) => {
   if (m.zoomControl) m.zoomControl.remove();
   const zones = L().layerGroup().addTo(m); // круги SOS-зон и радиуса поиска — не кластеризуются
   let group = L().layerGroup().addTo(m), clustered = false;
-  let items = [], markers = new Map(), sel = null, area = null, meMarker = null, reqId = 0, deb = 0, auto = false, autoT = 0, hover = null;
+  let items = [], total = 0, areaB = null, markers = new Map(), sel = null, area = null, meMarker = null, reqId = 0, deb = 0, auto = false, autoT = 0, hover = null;
 
   // Программные сдвиги карты не должны показывать кнопку «Искать в этой области»
   const programmatic = (fn) => { auto = true; clearTimeout(autoT); autoT = setTimeout(() => { auto = false; }, 900); fn(); };
@@ -441,12 +441,13 @@ route('/map', async (view) => {
   function renderList() {
     const shown = area ? items.filter((a) => a.lat != null && area.contains([a.lat, a.lng])) : items;
     $('#tcount', view).textContent = shown.length;
-    const cnt = `${shown.length} ${tr(plural(shown.length, 'заявка', 'заявки', 'заявок'), shown.length === 1 ? 'report' : 'reports')}`;
+    const more = items.length < total; // на сервере есть ещё заявки по этим условиям
+    const cnt = `${shown.length}${more ? ' ' + tr('из', 'of') + ' ' + total : ''} ${tr(plural(more ? total : shown.length, 'заявка', 'заявки', 'заявок'), (more ? total : shown.length) === 1 ? 'report' : 'reports')}`;
     const head = h`<div class="list-head"><b>${area ? `${tr('В этой области', 'In this area')}: ${cnt}` : cnt}</b>
       ${area ? h`<button type="button" class="link xs" data-area-reset>${tr('Показать все', 'Show all')}</button>` : ''}
       <label class="sort-sel">${SORT_IC}<select data-sort aria-label="${tr('Сортировка', 'Sort')}">${SORTS.map(([v, l]) => h`<option value="${v}" ${curSort() === v ? 'selected' : ''}>${l}</option>`)}</select>${icon('chevR', 'ic-sm chev')}</label></div>`;
     mount(listEl, shown.length
-      ? h`${head}${shown.map((a, i) => h`<div class="mrow rise ${a.id === sel ? 'sel' : ''}" data-id="${a.id}" style="--i:${Math.min(i, 8)}">${appRow(a)}</div>`)}`
+      ? h`${head}${shown.map((a, i) => h`<div class="mrow rise ${a.id === sel ? 'sel' : ''}" data-id="${a.id}" style="--i:${Math.min(i, 8)}">${appRow(a)}</div>`)}${more ? h`<div class="list-more"><button type="button" class="btn btn-ghost btn-sm" data-more>${tr('Показать ещё', 'Show more')}</button></div>` : ''}`
       : h`${head}${empty('search', t('map.empty', 'Ничего не найдено', 'Nothing found'), area ? tr('В этой области заявок нет — сдвиньте карту или покажите все.', 'No reports here — move the map or show all.') : t('map.empty_t', 'Измените фильтры или расширьте радиус.', 'Change filters or widen the radius.'), hasFilters() ? h`<button type="button" class="btn btn-ghost btn-sm" data-reset-all>${tr('Сбросить фильтры', 'Reset filters')}</button>` : '')}`);
   }
   function renderEmpty() {
@@ -472,26 +473,40 @@ route('/map', async (view) => {
     if (location.hash !== hash) history.replaceState(history.state, '', hash);
   }
 
-  async function load({ fit = true } = {}) {
+  // more — догрузить следующую страницу; bounds — «Искать в этой области» (область уходит на сервер)
+  async function load({ fit = true, more = false, bounds = null } = {}) {
     const id = ++reqId;
-    syncControls(); syncUrl();
-    area = null; areaBtn.hidden = true;
+    if (!more) { syncControls(); syncUrl(); areaB = bounds; area = null; areaBtn.hidden = true; }
     page.classList.add('loading');
-    if (!listEl.querySelector('.mrow')) mount(listEl, h`<div class="list-head"><span class="sk" style="width:110px;height:16px;border-radius:6px"></span></div>${Array.from({ length: 5 }, () => h`<div class="sk sk-row"></div>`)}`);
+    if (more) listEl.classList.add('dim');
+    else if (!listEl.querySelector('.mrow')) mount(listEl, h`<div class="list-head"><span class="sk" style="width:110px;height:16px;border-radius:6px"></span></div>${Array.from({ length: 5 }, () => h`<div class="sk sk-row"></div>`)}`);
     else listEl.classList.add('dim');
     const p = new URLSearchParams({ limit: '200' });
     ['q', 'category', 'kind', 'from', 'to', 'emergency'].forEach((k) => f[k] && p.set(k, f[k]));
     if (f.status !== 'all') p.set('status', f.status);
     if (f.center) { p.set('lat', f.center[0]); p.set('lng', f.center[1]); if (f.radius) p.set('radius', f.radius); }
     if (curSort()) p.set('sort', curSort());
-    let res = [];
-    try { res = (await GET('/applications?' + p)).items || []; } catch (e) { if (id === reqId) toastErr(e); }
+    if (areaB) p.set('bbox', [areaB.getSouth(), areaB.getWest(), areaB.getNorth(), areaB.getEast()].map((x) => x.toFixed(5)).join(','));
+    if (more) p.set('offset', items.length);
+    let res;
+    try { res = await GET('/applications?' + p); } catch (e) {
+      if (id !== reqId || !page.isConnected || !m._mapPane) return;
+      page.classList.remove('loading'); listEl.classList.remove('dim');
+      // сбой загрузки — это не «заявок нет»: прежний список остаётся, а если его не было — заглушка с «Повторить»
+      if (more || items.length) { toastErr(e); return; }
+      const err = h`${icon('alert')}<b>${tr('Не удалось загрузить заявки', 'Could not load reports')}</b><p>${e.message || ''}</p><button type="button" class="btn btn-sm" data-retry>${tr('Повторить', 'Retry')}</button>`;
+      mount(listEl, h`<div class="empty">${err}</div>`);
+      const box = $('#mempty', view); mount(box, err); box.hidden = false;
+      return;
+    }
     if (id !== reqId || !page.isConnected || !m._mapPane) return; // ушли со страницы, карта уже убрана
-    items = res;
+    items = more ? items.concat(res.items || []) : res.items || [];
+    total = Math.max(res.total || 0, items.length);
+    area = areaB;
     page.classList.remove('loading'); listEl.classList.remove('dim');
     if (sel != null && !items.some((a) => a.id === sel)) { sel = null; closePeek(); }
     drawMarkers(); renderList(); renderEmpty();
-    if (fit) fitAll();
+    if (fit && !more && !areaB) fitAll();
   }
   function resetAll() {
     Object.assign(f, DEF); input.value = '';
@@ -507,9 +522,12 @@ route('/map', async (view) => {
     else return;
     load();
   };
-  view.addEventListener('click', (e) => {
+  // на .map-page, а не на общем #view: иначе каждый визит на карту оставлял обработчик с целой картой в памяти
+  page.addEventListener('click', (e) => {
     if (e.target.closest('[data-reset-all]')) resetAll();
-    else if (e.target.closest('[data-area-reset]')) { area = null; renderList(); }
+    else if (e.target.closest('[data-area-reset]')) load({ fit: false });
+    else if (e.target.closest('[data-more]')) load({ more: true });
+    else if (e.target.closest('[data-retry]')) load();
   });
   listEl.addEventListener('mouseover', (e) => {
     const r = e.target.closest('.mrow'); const id = r ? +r.dataset.id : null;
@@ -548,7 +566,7 @@ route('/map', async (view) => {
     if (items.length) areaBtn.hidden = false;
   });
   areaBtn.onclick = () => {
-    area = m.getBounds().pad(-0.04); areaBtn.hidden = true; renderList();
+    load({ bounds: m.getBounds().pad(-0.04) });
     const c = $('.map-seg b', view); c.classList.remove('bump'); void c.offsetWidth; c.classList.add('bump');
   };
   $('#zin', view).onclick = () => m.zoomIn();
@@ -700,6 +718,21 @@ async function wizard(view, kind, existing) {
   const stepsFor = () => d.category === 'people' ? ['cat', 'details', 'looks', 'photos', 'place', 'final'] : ['cat', 'details', 'photos', 'place', 'final'];
   let steps = stepsFor();
   let step = edit ? 1 : (d.category ? 1 : 0);
+  // Черновик: введённое хранится в sessionStorage — «Назад» в браузере, обновление страницы, «Отмена» или истёкшая
+  // сессия не стирают заявку (после входа мастер откроется с теми же данными). После публикации черновик удаляется.
+  const draftKey = edit ? 'mba.wiz.edit.' + d.id : 'mba.wiz.' + kind;
+  const ss = (fn) => { try { return fn(window.sessionStorage); } catch (e) { return null; } };
+  let dirty = false;
+  const persist = () => { dirty = true; ss((st) => st.setItem(draftKey, JSON.stringify({ d, step, at: Date.now() }))); };
+  const dropDraft = () => { dirty = false; ss((st) => st.removeItem(draftKey)); };
+  {
+    let dr = null; try { dr = JSON.parse(ss((st) => st.getItem(draftKey)) || 'null'); } catch (e) { dr = null; }
+    const qc = query().get('category');
+    if (dr && dr.d && !wardId && !query().get('template') && (!qc || !dr.d.category || qc === dr.d.category) && Date.now() - (dr.at || 0) < 7 * 864e5) {
+      Object.assign(d, dr.d); steps = stepsFor(); step = Math.max(edit ? 1 : 0, Math.min(dr.step || 0, steps.length - 1)); dirty = true;
+      setTimeout(() => toast(tr('Восстановлен черновик', 'Draft restored'), 'info', tr('Продолжайте с того места, где остановились', 'Continue where you left off')), 0);
+    }
+  }
   let getPhotos = () => d.photos;
   let getPlacePhoto = () => (d.place_photo ? [d.place_photo] : []);
   const isLost = kind === 'lost';
@@ -710,6 +743,7 @@ async function wizard(view, kind, existing) {
     if (steps[step] === 'place') d.place_photo = getPlacePhoto()[0] || '';
     const form = $('#wform', view);
     if (form) Object.assign(d, formData(form));
+    persist();
     return true;
   }
   function clearErrors() {
@@ -750,6 +784,9 @@ async function wizard(view, kind, existing) {
     if (s === 'place' && d.abroad && !d.country) return err(tr('Выберите страну', 'Choose the country'), 'country');
     if (s === 'place' && (d.lat == null || d.lat === '')) return err(t('wiz.e_place', 'Отметьте место на карте', 'Mark the place on the map'), '#picker');
     if (s === 'place' && !d.event_date) return err(tr('Укажите дату', 'Enter the date'), 'event_date');
+    // браузер не проверяет max/min при «Далее» мастера — проверяем сами, чтобы ошибка не всплыла только на последнем шаге
+    if (s === 'place' && d.event_date > localDate()) return err(tr('Дата не может быть в будущем', 'The date cannot be in the future'), 'event_date');
+    if (s === 'place' && d.event_date < '1900-01-01') return err(tr('Некорректная дата', 'Invalid date'), 'event_date');
     if (s === 'place' && d.category === 'people' && isLost && !d.address && !d.landmark && !d.transport) return err(t('wiz.e_where', 'Укажите адрес, место или транспорт', 'Enter an address, place or transport'), 'address');
     if (s === 'looks' && d.height !== '' && d.height != null && (+d.height < 40 || +d.height > 250)) return err(tr('Рост — от 40 до 250 см', 'Height: 40–250 cm'), 'height');
     if (s === 'looks' && d.weight !== '' && d.weight != null && (+d.weight < 2 || +d.weight > 300)) return err(tr('Вес — от 2 до 300 кг', 'Weight: 2–300 kg'), 'weight');
@@ -904,7 +941,7 @@ async function wizard(view, kind, existing) {
         <div class="picker" id="picker"></div>
         <p class="xs muted">${icon('lock', 'ic-sm')} ${t('wiz.geo_note', 'Геолокация определяется только по вашему нажатию и с вашего согласия.', 'Location is used only when you tap the button and allow it.')}</p>
         <div class="grid-pair">
-          ${fld(t('wiz.date_req', 'Дата *', 'Date *'), h`<input type="date" name="event_date" value="${d.event_date || ''}" max="${localDate()}">`)}
+          ${fld(t('wiz.date_req', 'Дата *', 'Date *'), h`<input type="date" name="event_date" value="${d.event_date || ''}" min="1900-01-01" max="${localDate()}">`)}
           ${fld(t('wiz.time', 'Время', 'Time'), h`<input type="time" name="event_time" value="${d.event_time || ''}">`)}
         </div>
         <label class="check abroad-check"><input type="checkbox" name="abroad" ${d.abroad ? 'checked' : ''}> <span>${icon('plane', 'ic-sm')} ${tr('Это произошло за границей', 'It happened abroad')}</span></label>
@@ -1002,6 +1039,13 @@ async function wizard(view, kind, existing) {
     // новый шаг — старые ошибки не висят; исправили поле — подсветка снимается
     $$('#toasts .toast.err').forEach((x) => x.remove());
     const wf = $('#wform', view);
+    if (wf) { let pt = 0; wf.addEventListener('input', () => { clearTimeout(pt); pt = setTimeout(() => { if (wf.isConnected) saveStep(); }, 400); }); }
+    const cancel = $('.page-head a', view);
+    if (cancel) cancel.addEventListener('click', async (e) => {
+      if (!dirty) return;
+      e.preventDefault(); saveStep();
+      if (await confirmBox(tr('Выйти из заявки?', 'Leave the report?'), tr('Введённые данные сохранятся как черновик — вернуться к ним можно, снова открыв форму.', 'Your input is kept as a draft — open the form again to continue.'), { ok: tr('Выйти', 'Leave') })) { dirty = false; go(cancel.getAttribute('href')); }
+    });
     if (wf) { const fix = (e) => { const b = e.target.closest('.has-err'); if (b) { b.classList.remove('has-err'); $$('.ferr', b).forEach((x) => x.remove()); e.target.removeAttribute('aria-invalid'); } }; wf.addEventListener('input', fix); wf.addEventListener('change', fix); }
     const prev = $('#prev', view); if (prev) prev.onclick = () => { saveStep(); step--; draw(); };
     $('#next', view).onclick = (e) => {
@@ -1022,9 +1066,12 @@ async function wizard(view, kind, existing) {
       event_date: d.event_date, event_time: d.event_time || '', lat: d.lat, lng: d.lng, address: d.address, city: d.city, contact: d.contact, reward: d.reward,
       photos: d.photos || [], family: !!d.family, emergency_radius: d.emergency_on ? +d.emergency_radius : null
     };
+    // правка: версия, с которой открыли форму, — сервер не даст молча затереть изменения из другой вкладки
+    if (edit) body.base_updated_at = d.updated_at;
     try {
-      if (edit) { const r = await PATCH('/applications/' + d.id, body); toast(r.item.status === 'pending' ? tr('Изменения отправлены на проверку', 'Changes sent for review') : tr('Изменения сохранены', 'Changes saved')); go('#/a/' + d.id); return; }
+      if (edit) { const r = await PATCH('/applications/' + d.id, body); dropDraft(); toast(r.item.status === 'pending' ? tr('Изменения отправлены на проверку', 'Changes sent for review') : tr('Изменения сохранены', 'Changes saved')); go('#/a/' + d.id); return; }
       const r = await POST('/applications', body);
+      dropDraft();
       const pending = r.item.status === 'pending';
       mount(view, h`<div class="wrap wizard"><div class="success">
         <div class="big-ic ${pending ? 'wait' : ''}">${icon(pending ? 'clock' : 'check')}</div>
@@ -1035,12 +1082,16 @@ async function wizard(view, kind, existing) {
         ${body.country && isLost ? h`<div style="max-width:560px;margin:20px auto 0;text-align:left">${countryCard(body.country, d.country_name)}</div>` : ''}
         <div class="row" style="justify-content:center;margin-top:22px;flex-wrap:wrap"><a class="btn btn-ghost" href="#/a/${r.item.id}">${t('wiz.open', 'Открыть заявку', 'Open report')}</a>${!pending ? h`<a class="btn btn-ghost" href="#/a/${r.item.id}/poster">${icon('printer')}${tr('Листовка для печати', 'Printable poster')}</a>` : ''}<a class="btn btn-ghost" href="${d.ward_id ? '#/ward/' + d.ward_id : '#/me/apps'}">${d.ward_id ? tr('К карточке близкого', 'Back to the card') : t('wiz.my', 'Мои заявки', 'My reports')}</a></div>
       </div></div>`);
-    } catch (e) { toastErr(e); }
+    } catch (e) {
+      // ошибка в дате — возвращаем на шаг «Где и когда», где это поле
+      if (['bad_date', 'future_date'].includes(e.code) && steps.includes('place')) { step = steps.indexOf('place'); draw(); }
+      toastErr(e);
+    }
   }
   draw();
 }
 route('/new/:kind', (view, p) => wizard(view, p.kind === 'found' ? 'found' : 'lost'), { auth: true });
-route('/edit/:id', async (view, p) => { const r = await GET('/applications/' + p.id); if (!r.item.is_owner) throw Object.assign(new Error(tr('Нет доступа', 'No access')), { status: 404 }); wizard(view, r.item.kind, r.item); }, { auth: true });
+route('/edit/:id', async (view, p) => { const r = await GET('/applications/' + p.id); if (!r.item.is_owner) throw Object.assign(new Error(tr('Редактировать заявку может только её автор', 'Only the author can edit this report')), { status: 403, back: '#/a/' + p.id }); wizard(view, r.item.kind, r.item); }, { auth: true });
 
 /* =================== СТРАНИЦА ЗАЯВКИ =================== */
 route('/a/:id', async (view, p) => {
@@ -1185,7 +1236,7 @@ route('/a/:id', async (view, p) => {
     if (!state.user) return needLogin();
     const btn = e.currentTarget; // после await currentTarget уже null — запоминаем кнопку заранее
     btn.disabled = true;
-    try { const r = await POST(`/applications/${a.id}/save`); btn.classList.toggle('btn-red', r.saved); btn.setAttribute('aria-pressed', String(!!r.saved)); btn.querySelector('span').textContent = r.saved ? tr('Сохранено', 'Saved') : tr('Сохранить', 'Save'); toast(r.saved ? tr('Добавлено в сохранённые', 'Saved') : tr('Убрано из сохранённых', 'Removed')); } catch (er) { toastErr(er); } finally { btn.disabled = false; }
+    try { const r = await POST(`/applications/${a.id}/save`, { saved: !btn.classList.contains('btn-red') }); btn.classList.toggle('btn-red', r.saved); btn.setAttribute('aria-pressed', String(!!r.saved)); btn.querySelector('span').textContent = r.saved ? tr('Сохранено', 'Saved') : tr('Сохранить', 'Save'); toast(r.saved ? tr('Добавлено в сохранённые', 'Saved') : tr('Убрано из сохранённых', 'Removed')); } catch (er) { toastErr(er); } finally { btn.disabled = false; }
   });
   on('#complain', () => { if (!state.user) return needLogin(); complain('application', a.id); });
   on('#delReq', () => {
@@ -1243,7 +1294,7 @@ function visitorPanel(a) {
       <p class="xs muted center">${icon('lock', 'ic-sm')} ${t('a.anon', 'Чат анонимный — контакты скрыты', 'Anonymous chat — contacts stay hidden')}</p>` : h`<div class="status-line">${icon(a.status === 'found' ? 'check' : 'lock')}${statusName(a.status)}</div>`}
     <div class="actions-row">
       <button class="btn btn-soft" id="share">${icon('share')}<span>${tr('Поделиться', 'Share')}</span></button>
-      <button class="btn btn-soft ${a.saved ? 'btn-red' : ''}" id="save">${icon('bookmark')}<span>${a.saved ? tr('Сохранено', 'Saved') : tr('Сохранить', 'Save')}</span></button>
+      <button class="btn btn-soft ${a.saved ? 'btn-red' : ''}" id="save" aria-pressed="${a.saved ? 'true' : 'false'}">${icon('bookmark')}<span>${a.saved ? tr('Сохранено', 'Saved') : tr('Сохранить', 'Save')}</span></button>
       <button class="btn btn-soft" id="complain">${icon('flag')}<span>${tr('Жалоба', 'Report')}</span></button>
     </div>
     <div class="note note-amber small">${icon('alert')}<div>${t('a.fraud', 'Не платите заранее и встречайтесь в людных местах.', 'Don’t pay in advance; meet in public places.')}</div></div>
@@ -1331,8 +1382,10 @@ async function chatShell(view, activeId) {
     <section class="chat-main" id="cm">${activeId ? h`<div class="spinner" style="margin:auto"></div>` : h`<div class="chat-pick">${icon('chat')}<b>${tr('Выберите диалог', 'Choose a conversation')}</b><span>${tr('Переписка откроется здесь', 'It will open here')}</span></div>`}</section>
   </div>`);
   const listEl = $('#cl', view);
+  // диалоги — по 30, «Показать ещё» добавляет следующую порцию; при обновлении списка показанное количество сохраняется
+  let shown = 30;
   const loadList = async () => {
-    const { items } = await GET('/chats');
+    const { items, has_more } = await GET('/chats?limit=' + shown);
     if (!listEl.isConnected) return;
     mount(listEl, items.length ? h`${items.map((c) => h`<a class="chat-item ${c.id === activeId ? 'on' : ''} ${c.unread ? 'unread' : ''}" href="#/chat/${c.id}" ${c.id === activeId ? raw('aria-current="page"') : ''}>
       ${chatAva(c)}
@@ -1340,18 +1393,26 @@ async function chatShell(view, activeId) {
       <span class="ci-app">${c.application.title}</span>
       <span class="ci-last"><span class="ci-text">${lastLine(c.last)}</span>${c.blocked ? icon('ban', 'ic-sm') : c.unread ? h`<span class="unread-dot" aria-label="${tr('Непрочитанных', 'Unread')}: ${c.unread}">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</span></span></a>`)}`
       : empty('chat', t('chats.empty', 'Пока нет переписок', 'No conversations yet'), t('chats.empty_t', 'Откройте заявку и нажмите «написать», чтобы связаться анонимно.', 'Open a report and tap “message” to contact anonymously.'), h`<a class="btn btn-sm" href="#/map">${t('home.all', 'Карта и поиск', 'Map & search')}</a>`));
+    if (has_more) {
+      listEl.insertAdjacentHTML('beforeend', h`<div class="center" style="padding:8px 0 12px"><button type="button" class="btn btn-ghost btn-sm" id="clMore">${tr('Показать ещё', 'Show more')}</button></div>`.s);
+      const b = $('#clMore', listEl); b.onclick = () => busy(b, async () => { shown += 30; try { await loadList(); } catch (er) { shown -= 30; toastErr(er); } });
+    }
   };
   // на телефоне открытая переписка занимает весь экран — список не нужен
   const listShown = () => !activeId || isDesk();
   if (listShown()) await loadList();
-  onLeave(onEvent((type) => { if ((type === 'message' || type === 'chat_read') && listShown()) loadList().catch(() => {}); }));
+  // пачка сообщений подряд — один перезапрос списка, а не на каждое
+  let lt = 0;
+  const soon = () => { clearTimeout(lt); lt = setTimeout(() => loadList().catch(() => {}), 700); };
+  onLeave(() => clearTimeout(lt));
+  onLeave(onEvent((type) => { if ((type === 'message' || type === 'chat_read') && listShown()) soon(); }));
   if (activeId) await chatPane($('#cm', view), activeId, () => { if (isDesk()) loadList().catch(() => {}); });
 }
 route('/chats', (view) => chatShell(view, null), { auth: true });
 route('/chat/:id', (view, p) => chatShell(view, Number(p.id)), { auth: true, full: true });
 
 async function chatPane(el, id, onChange) {
-  const { chat, messages } = await GET('/chats/' + id);
+  const { chat, messages, has_more: older } = await GET('/chats/' + id);
   refreshMe().catch(() => {});
   const mod = chat.side === 'moderator';
   mount(el, h`<div class="chat-page">
@@ -1410,6 +1471,33 @@ async function chatPane(el, id, onChange) {
   if (!messages.length) box.insertAdjacentHTML('beforeend', h`<div class="chat-empty">${icon('lock')}<b>${t('chat.start', 'Начните переписку', 'Start the conversation')}</b><span>${t('chat.start_t', 'Спросите о деталях, которые знает только владелец. Контакты скрыты.', 'Ask about details only the owner would know. Contacts stay hidden.')}</span></div>`.s);
   messages.forEach((m) => append(m, true));
   requestAnimationFrame(() => toBottom());
+  // сервер отдаёт последние 100 сообщений; более ранние — по кнопке, вставляются сверху без прыжка прокрутки
+  let oldest = messages.length ? messages[0].id : 0, first = messages[0];
+  if (older && oldest) {
+    $('.chat-warn', box).insertAdjacentHTML('afterend', h`<div class="center msgs-more"><button type="button" class="btn btn-ghost btn-sm" id="older">${tr('Показать ранние сообщения', 'Show earlier messages')}</button></div>`.s);
+    const ob = $('#older', box);
+    ob.onclick = () => busy(ob, async () => {
+      try {
+        const r = await GET(`/chats/${id}?before=${oldest}`);
+        const wrap = ob.parentElement, next = wrap.nextElementSibling, fromBottom = box.scrollHeight - box.scrollTop;
+        let day = '', prev = null, html = '';
+        r.messages.forEach((m) => {
+          const d = dayLabel(m.created_at); if (d !== day) { html += h`<div class="msg-day"><span>${d}</span></div>`.s; day = d; prev = null; }
+          html += bubble(m, !!prev && prev.mine === m.mine && Math.abs(pDate(m.created_at) - pDate(prev.created_at)) < 5 * 60e3).s; prev = m;
+        });
+        const tmp = document.createElement('div'); tmp.innerHTML = html; const nodes = [...tmp.children];
+        wrap.after(...nodes); nodes.forEach(bindMsg);
+        // день на стыке не повторяем; серия сообщений одного автора продолжается через стык
+        if (next && next.classList.contains('msg-day') && next.textContent.trim() === day) {
+          const firstEl = next.nextElementSibling; next.remove();
+          if (firstEl && firstEl.classList.contains('msg') && prev && first && prev.mine === first.mine && Math.abs(pDate(first.created_at) - pDate(prev.created_at)) < 5 * 60e3) firstEl.classList.add('cont');
+        }
+        if (r.messages.length) { oldest = r.messages[0].id; first = r.messages[0]; }
+        if (!r.has_more) wrap.remove();
+        box.scrollTop = box.scrollHeight - fromBottom;
+      } catch (er) { toastErr(er); }
+    });
+  }
   // плашка проверки скрытой приметы: обновляется после ответа и когда собеседник проходит проверку
   const vbar = () => { mount($('#vbar', el), verifyBar(chat)); bindVerify(el, chat, (m) => { append(m); vbar(); }); };
   vbar();
@@ -1457,7 +1545,7 @@ async function chatPane(el, id, onChange) {
     const on = (sel, fn) => { const x = $(sel, s.el); if (x) x.onclick = (e) => { e.preventDefault(); s.close(); fn(); }; };
     on('[data-c]', () => complain('chat', chat.id));
     on('[data-b]', async () => { if (await confirmBox(t('chat.block', 'Заблокировать собеседника', 'Block user'), t('chat.block_t', 'Он не сможет писать вам в этом чате.', 'They will not be able to message you here.'), { danger: true, ok: tr('Заблокировать', 'Block') })) { await POST(`/chats/${chat.id}/block`, { block: true }); go(location.hash); } });
-    on('[data-u]', async () => { await POST(`/chats/${chat.id}/block`, { block: false }); go(location.hash); });
+    on('[data-u]', async () => { try { await POST(`/chats/${chat.id}/block`, { block: false }); go(location.hash); } catch (e) { toastErr(e); } });
   };
   onLeave(onEvent((type, d) => {
     if (type === 'message' && d.chat_id === chat.id) {
@@ -1526,7 +1614,8 @@ setShell((view, path) => {
 route('/me', (view) => meView(view, ''), { auth: true });
 route('/me/:tab', (view, p) => meView(view, p.tab), { auth: true });
 async function meView(el, tab) {
-  await refreshMe();
+  // профиль свежий (обновляется и по событиям) — при переходе между вкладками кабинета заново не запрашиваем
+  if (!state.user || !state.meAt || Date.now() - state.meAt > 30e3) await refreshMe();
   const fn = { '': meOverview, apps: meApps, saved: meSaved, profile: meProfile, zone: meZone, family: meFamily, wards: meWards, registry: meRegistry, payments: mePayments, rewards: meRewards, settings: meSettings }[tab];
   if (!fn) throw Object.assign(new Error(tr('Раздел не найден', 'Section not found')), { status: 404 });
   await fn(el, state.user);
@@ -1540,7 +1629,10 @@ const ROLE = (r) => ({ user: t('role.user', 'Пользователь', 'User'),
 async function meOverview(el, u) {
   const lp = levelProgress(u);
   const none = { items: [] };
-  const [apps, chats, saved, vals, notes] = await Promise.all([GET('/my/applications'), GET('/chats'), GET('/my/saved').catch(() => none), GET('/valuables').catch(() => none), GET('/notifications').catch(() => none)]);
+  // счётчики чатов, сохранённых и реестра приходят в /api/me (u.counts) — полные списки ради чисел не грузим
+  const [apps, notes] = await Promise.all([GET('/my/applications'), GET('/notifications').catch(() => none)]);
+  const cnt = (n) => ({ items: { length: n || 0 } });
+  const uc = u.counts || {}, chats = cnt(uc.chats), saved = cnt(uc.saved), vals = cnt(uc.valuables);
   const count = (n, one, few, many, en1, en) => `${n} ${tr(plural(n, one, few, many), n === 1 ? en1 : en)}`;
   const sub = {
     '/me/apps': apps.items.length ? count(apps.items.length, 'заявка', 'заявки', 'заявок', 'report', 'reports') : tr('пока нет', 'none yet'),
@@ -1583,15 +1675,26 @@ async function meOverview(el, u) {
     <div class="row" style="margin-top:16px"><a class="btn btn-lost grow" href="#/new/lost">${icon('plus')}${t('home.lost', 'Я потерял', 'I lost')}</a><a class="btn btn-found grow" href="#/new/found">${icon('plus')}${t('home.found', 'Я нашёл', 'I found')}</a></div>`);
   meNudge(el); // одна подсказка: установить приложение или включить уведомления
 }
+// Длинные личные списки — страницами по 30 с кнопкой «Показать ещё» (сервер: ?limit=&offset=, флаг has_more)
+const ME_PAGE = 30;
+async function pagedList(el, url, draw) {
+  let items = [], more = false;
+  const load = async () => { const r = await GET(`${url}?limit=${ME_PAGE}&offset=${items.length}`); items = items.concat(r.items); more = !!r.has_more; };
+  const render = () => {
+    if (!el.isConnected) return;
+    mount(el, h`${draw(items)}${more ? h`<div class="center" style="margin-top:16px"><button type="button" class="btn btn-ghost" id="meMore">${tr('Показать ещё', 'Show more')}</button></div>` : ''}`);
+    observeReveal(el);
+    const b = $('#meMore', el); if (b) b.onclick = () => busy(b, async () => { try { await load(); render(); } catch (er) { toastErr(er); } });
+  };
+  await load(); render();
+}
 async function meApps(el) {
-  const { items } = await GET('/my/applications');
-  mount(el, h`<div class="sec-head"><h2>${t('me.apps', 'Мои заявки', 'My reports')}</h2><a class="btn btn-sm" href="#/new/lost">${icon('plus')}${tr('Новая', 'New')}</a></div>
+  return pagedList(el, '/my/applications', (items) => h`<div class="sec-head"><h2>${t('me.apps', 'Мои заявки', 'My reports')}</h2><a class="btn btn-sm" href="#/new/lost">${icon('plus')}${tr('Новая', 'New')}</a></div>
     ${items.length ? h`<div class="apps-list">${items.map((a) => appRow(a, a.match_count ? h`<span class="chip chip-found">${icon('match')}${a.match_count}</span>` : icon('chevR')))}</div>`
       : empty('file', t('me.apps_empty', 'У вас пока нет заявок', 'You have no reports yet'), t('me.apps_empty_t', 'Добавьте заранее карточки близких — при беде останется одно нажатие.', 'Add your loved ones in advance — in trouble it will take one tap.'), h`<a class="btn btn-sm" href="#/new/lost">${t('home.lost', 'Я потерял', 'I lost')}</a>`)}`);
 }
 async function meSaved(el) {
-  const { items } = await GET('/my/saved');
-  mount(el, h`<div class="sec-head"><h2>${t('me.saved', 'Сохранённые', 'Saved')}</h2></div>${items.length ? h`<div class="apps">${items.map((a, i) => appCard(a, i))}</div>` : empty('bookmark', t('me.saved_empty', 'Здесь появятся сохранённые заявки', 'Saved reports will appear here'))}`);
+  return pagedList(el, '/my/saved', (items) => h`<div class="sec-head"><h2>${t('me.saved', 'Сохранённые', 'Saved')}</h2></div>${items.length ? h`<div class="apps">${items.map((a, i) => appCard(a, i))}</div>` : empty('bookmark', t('me.saved_empty', 'Здесь появятся сохранённые заявки', 'Saved reports will appear here'))}`);
 }
 /* ---------- Профиль ---------- */
 const CITIES = ['Москва', 'Санкт-Петербург', 'Новосибирск', 'Екатеринбург', 'Казань', 'Нижний Новгород', 'Челябинск', 'Самара', 'Омск', 'Ростов-на-Дону', 'Уфа', 'Красноярск', 'Воронеж', 'Пермь', 'Волгоград', 'Краснодар', 'Тюмень', 'Сочи', 'Калининград', 'Владивосток'];
@@ -1844,18 +1947,18 @@ async function meFamily(el) {
   </div>`);
   const reload = () => meFamily(el).then(() => refreshMe());
   $$('[data-acc]', el).forEach((b) => b.onclick = async () => { try { await POST(`/family/invites/${b.dataset.acc}/accept`); toast(tr('Вы в семейном аккаунте', 'You joined the family')); reload(); } catch (e) { toastErr(e); } });
-  $$('[data-dec]', el).forEach((b) => b.onclick = async () => { await POST(`/family/invites/${b.dataset.dec}/decline`); reload(); });
-  $$('[data-rm]', el).forEach((b) => b.onclick = async () => { await DEL('/family/members/' + b.dataset.rm); reload(); });
-  const mk = $('#mk', el); if (mk) mk.onsubmit = async (e) => { e.preventDefault(); try { await POST('/family', formData(e.target)); reload(); } catch (er) { toastErr(er); } };
+  $$('[data-dec]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { await POST(`/family/invites/${b.dataset.dec}/decline`); reload(); } catch (e) { toastErr(e); reload(); } }));
+  $$('[data-rm]', el).forEach((b) => b.onclick = () => busy(b, async () => { try { await DEL('/family/members/' + b.dataset.rm); reload(); } catch (e) { toastErr(e); reload(); } }));
+  const mk = $('#mk', el); if (mk) mk.onsubmit = (e) => { e.preventDefault(); const form = e.target; busy(e.submitter || $('button', form), async () => { try { await POST('/family', formData(form)); reload(); } catch (er) { toastErr(er); } }); };
   const inv = $('#inv', el); if (inv) inv.onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { await POST('/family/invite', formData(e.target)); toast(tr('Приглашение отправлено', 'Invitation sent')); reload(); } catch (er) { toastErr(er); } }); };
-  const lv = $('#leave', el); if (lv) lv.onclick = async () => { if (await confirmBox(lv.textContent, tr('Общие заявки останутся у их авторов.', 'Shared reports stay with their authors.'), { danger: true })) { await POST('/family/leave'); reload(); } };
+  const lv = $('#leave', el); if (lv) lv.onclick = () => busy(lv, async () => { try { if (await confirmBox(lv.textContent, tr('Общие заявки останутся у их авторов.', 'Shared reports stay with their authors.'), { danger: true })) { await POST('/family/leave'); reload(); } } catch (e) { toastErr(e); reload(); } });
 }
 async function meRegistry(el) {
   const { items, limit } = await GET('/valuables');
   const ST = { ok: [tr('В порядке', 'OK'), 'chip-ok'], stolen: [tr('Украдено', 'Stolen'), 'chip-lost'], lost: [tr('Утеряно', 'Lost'), 'chip-warn'] };
   mount(el, h`<div class="sec-head"><div><h2>${t('me.registry', 'Реестр ценностей', 'Valuables')}</h2><p>${t('me.reg_t', 'Фото, номера и приметы. При краже отметьте «украдено» — предмет появится в проверке.', 'Photos, serials and marks. If stolen, mark it — it will show up in the public check.')}</p></div>
     <button class="btn btn-sm" id="add">${icon('plus')}${tr('Добавить', 'Add')}</button></div>
-    <div class="note small" style="margin-bottom:14px">${icon('gem')}<div><b>${tr('Использовано', 'Used')} ${items.length} / ${limit}</b>${limit < 100 ? h` · <a class="link" href="#/tariffs">${t('me.reg_up', 'Расширить до 100 предметов', 'Extend to 100 items')}</a>` : ''}<div class="xs muted" style="margin-top:4px">${t('me.reg_disclaimer', 'Реестр хранит сведения со слов владельца, экспертиза подлинности не проводится.', 'Data is as stated by the owner; authenticity is not verified.')}</div></div></div>
+    <div class="note small" style="margin-bottom:14px">${icon('gem')}<div><b>${tr('Использовано', 'Used')} ${items.length} / ${limit}</b>${limit < 100 ? h`<a class="link" style="display:block;margin-top:4px" href="#/tariffs">${t('me.reg_up', 'Расширить до 100 предметов', 'Extend to 100 items')}</a>` : ''}<div class="xs muted" style="margin-top:4px">${t('me.reg_disclaimer', 'Реестр хранит сведения со слов владельца, экспертиза подлинности не проводится.', 'Data is as stated by the owner; authenticity is not verified.')}</div></div></div>
     ${items.length ? h`<div class="apps">${items.map((v, i) => h`<div class="app-card reg-card rise" style="--i:${i}"><div class="media ${v.photos[0] ? '' : 'no-photo'}">${v.photos[0] ? h`<img src="${v.photos[0]}" alt="">` : mediaPh('things', '', 'gem')}<div class="tags"><span class="chip ${ST[v.status][1]}">${ST[v.status][0]}</span></div></div>
       <div class="body"><h3>${v.title}</h3>${v.serials ? h`<div class="xs muted">№ ${v.serials}</div>` : ''}
       <div class="reg-acts"><div class="reg-st">${v.status === 'ok' ? h`<button class="btn btn-danger btn-xs" data-st="${v.id}" data-v="stolen">${tr('Украдено', 'Stolen')}</button><button class="btn btn-ghost btn-xs" data-st="${v.id}" data-v="lost">${tr('Утеряно', 'Lost')}</button>` : h`<button class="btn btn-ghost btn-xs" data-st="${v.id}" data-v="ok">${tr('Нашлось', 'Recovered')}</button>`}</div>
@@ -1912,7 +2015,7 @@ async function meRewards(el, u) {
     </div></div>`);
 }
 async function meSettings(el, u) {
-  mount(el, h`<div class="stack-lg" style="max-width:720px">
+  mount(el, h`<div class="sec-head"><h2>${t('me.settings', 'Настройки', 'Settings')}</h2></div><div class="stack-lg">
     <div class="card pad stack">
       <h3>${t('set.lang', 'Язык', 'Language')}</h3>
       <div class="seg" id="lang"><button class="${state.lang === 'ru' ? 'on' : ''}" data-v="ru">Русский</button><button class="${state.lang === 'en' ? 'on' : ''}" data-v="en">English</button></div>
@@ -1928,7 +2031,11 @@ async function meSettings(el, u) {
   $$('#lang button', el).forEach((b) => b.onclick = async () => { await setLang(b.dataset.v, true); meSettings(el, state.user); });
   pushCard($('#pushCard', el));
   installCard($('#installCard', el));
-  $('#logout', el).onclick = async () => { await disablePush(); await POST('/auth/logout'); state.user = null; connectStream(); go('#/'); };
+  // выход: без сети — понятное сообщение (а не тишина); после выхода другие вкладки тоже выходят (mba.logout)
+  $('#logout', el).onclick = (e) => busy(e.currentTarget, async () => {
+    try { await disablePush().catch(() => {}); await POST('/auth/logout'); } catch (er) { toastErr(er.code === 'offline' ? new Error(tr('Нет соединения с сервером — выход не выполнен', 'No connection — you are still signed in')) : er); return; }
+    state.user = null; safeSet('mba.logout', String(Date.now())); connectStream(); go('#/');
+  });
   $('#delAcc', el).onclick = async () => {
     if (await confirmBox(t('set.delete', 'Удалить аккаунт', 'Delete account'), t('set.delete_t', 'Профиль, заявки и реестр удалятся навсегда.', 'Your profile, reports and registry will be deleted for good.'), { danger: true, ok: tr('Удалить навсегда', 'Delete forever') })) {
       await DEL('/me'); state.user = null; connectStream(); toast(tr('Аккаунт удалён', 'Account deleted')); go('#/');
@@ -1940,7 +2047,7 @@ route('/registry', async (view) => {
   const q0 = query().get('q') || '';
   mount(view, h`<div class="wrap" style="max-width:860px"><div class="page-head"><span class="eyebrow">${t('reg.eyebrow', 'Реестр ценностей и антиквариата', 'Valuables & antiques registry')}</span><h1 style="margin-top:12px">${t('reg.title', 'Проверка предмета перед покупкой', 'Check an item before buying')}</h1>
     <p>${t('reg.sub', 'Серийный номер, IMEI, гравировка или название — покажем, если предмет числится украденным или утерянным.', 'Serial number, IMEI, engraving or name — we’ll show if it’s marked stolen or lost.')}</p></div>
-    <form class="search-box" id="rf">${icon('search')}<input name="q" value="${q0}" placeholder="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" minlength="3" required><button class="fbtn fbtn-search" aria-label="${tr('Проверить', 'Check')}">${icon('arrowUR')}</button></form>
+    <form class="search-box" id="rf">${icon('search')}<input name="q" value="${q0}" placeholder="${t('home.reg_ph', 'Серийный номер или название', 'Serial number or name')}" minlength="3" required><button class="fbtn fbtn-search" aria-label="${tr('Проверить', 'Check')}">${icon('search')}</button></form>
     <div class="row-wrap" style="margin-top:12px"><span class="xs muted">${tr('Например:', 'Try:')}</span><button type="button" class="chip chip-btn" data-try="NB-77120934">NB-77120934</button><button type="button" class="chip chip-btn" data-try="${tr('велосипед', 'bike')}">${tr('велосипед', 'bike')}</button></div>
     <div id="rr" style="margin-top:20px"></div>
     <div class="steps3">
@@ -1963,8 +2070,9 @@ route('/registry', async (view) => {
           <button class="btn btn-sm" data-rep="${v.id}">${tr('Сообщить владельцу', 'Notify owner')}</button></div>`)}</div>`
         : h`<div class="note note-blue">${icon('check')}<div><b>${t('reg.clean', 'Отметок о краже не найдено', 'No theft marks found')}</b>${t('reg.clean_t', 'Нет отметок «украдено» или «утеряно».', 'No “stolen” or “lost” marks.')}</div></div>`);
       $$('[data-rep]', view).forEach((b) => b.onclick = () => {
-        const s = sheet(h`${sheetHead(tr('Сообщить владельцу', 'Notify owner'), tr('Владелец получит уведомление. Ваши данные — только если сами укажете.', 'The owner gets notified. Your details are shared only if you add them.'))}<form class="stack"><label class="field"><span>${tr('Где и когда замечен предмет', 'Where and when you saw it')}</span><textarea name="message" rows="3" required></textarea></label><button class="btn btn-block">${tr('Отправить', 'Send')}</button></form>`);
-        $('form', s.el).onsubmit = async (e) => { e.preventDefault(); try { await POST(`/registry/${b.dataset.rep}/report`, formData(e.target)); s.close(); toast(tr('Владелец уведомлён', 'Owner notified')); } catch (er) { toastErr(er); } };
+        const s = sheet(h`${sheetHead(tr('Сообщить владельцу', 'Notify owner'), tr('Владелец получит уведомление. Ваши данные — только если сами укажете.', 'The owner gets notified. Your details are shared only if you add them.'))}<form class="stack"><label class="field"><span>${tr('Где и когда замечен предмет', 'Where and when you saw it')}</span><textarea name="message" rows="3" required maxlength="1000"></textarea></label><button class="btn btn-block">${tr('Отправить', 'Send')}</button></form>`);
+        // busy блокирует кнопку на время запроса — двойной клик не шлёт владельцу два уведомления
+        $('form', s.el).onsubmit = (e) => { e.preventDefault(); const form = e.target; busy(e.submitter || $('button', form), async () => { try { await POST(`/registry/${b.dataset.rep}/report`, formData(form)); s.close(); toast(tr('Владелец уведомлён', 'Owner notified')); } catch (er) { toastErr(er); } }); };
       });
     } catch (e) { mount($('#rr', view), ''); toastErr(e); }
   };
@@ -2221,14 +2329,14 @@ route('/login', async (view) => {
       <button class="btn btn-red btn-block btn-lg">${t('login.get_code', 'Получить код', 'Get code')}</button></form>`);
     $('#f1', view).onsubmit = (e) => { e.preventDefault(); busy(e.submitter, async () => { try { info = await POST('/auth/request', { target: e.target.elements.namedItem('target').value }); target = info.target; step2(); } catch (er) { toastErr(er); } }); };
   };
-  const step2 = () => {
+  const step2 = (keep = '') => {
     shell(h`<button class="back" id="bk">${icon('arrowL', 'ic-sm')}${demoEmail && target === demoEmail ? tr('Мой тестовый профиль', 'My test profile') : target}</button><h2>${t('login.code', 'Введите код', 'Enter the code')}</h2>
       <p class="muted" style="margin-top:8px">${demoEmail ? tr('Введите шесть цифр, показанных ниже.', 'Enter the six digits shown below.') : info.type === 'email' ? t('login.code_email', 'Мы отправили 6-значный код на почту.', 'We sent a 6-digit code to your e-mail.') : t('login.code_sms', 'Мы отправили 6-значный код по SMS.', 'We sent a 6-digit code by SMS.')}</p>
       ${info.devCode ? h`<div class="note note-blue small" style="margin-top:14px">${icon('spark')}<div>${t('login.dev', 'Тестовый режим (SMS/почта не подключены): код', 'Test mode (SMS/e-mail not connected): code')} <b style="font-family:var(--display);letter-spacing:.1em">${info.devCode}</b></div></div>` : ''}
       <form id="f2" style="margin-top:20px" class="stack"><div class="otp">${[0, 1, 2, 3, 4, 5].map((i) => h`<input inputmode="numeric" pattern="[0-9]*" aria-label="${tr('Цифра', 'Digit')} ${i + 1}" autocomplete="${i ? 'off' : 'one-time-code'}">`)}</div>
       ${info.isNew ? h`<div class="divider"></div><p style="font-weight:700">${t('login.new', 'Вы здесь впервые — заполните профиль', 'You are new here — complete your profile')}</p>
         <label class="field"><span>${t('f.name', 'Имя', 'Name')} <em>*</em></span><input name="name" required maxlength="80" autocomplete="name"></label>
-        <div class="grid-2"><label class="field"><span>${t('login.birth', 'Дата рождения', 'Date of birth')} <em>*</em></span><input name="birthdate" type="date" required max="${new Date(Date.now() - 18 * 365.25 * 864e5).toISOString().slice(0, 10)}"></label>
+        <div class="grid-2"><label class="field"><span>${t('login.birth', 'Дата рождения', 'Date of birth')} <em>*</em></span><input name="birthdate" type="date" required max="${(() => { const t18 = new Date(); t18.setFullYear(t18.getFullYear() - 18); return localDate(t18); })()}"></label>
         <label class="field"><span>${t('wiz.city', 'Город', 'City')}</span><input name="city" maxlength="80"></label></div>
         <label class="check"><input type="checkbox" name="consent_pd"> <span><a class="doc-link" href="#/legal/consent" data-doc="consent" data-for="consent_pd">${t('login.c1', 'Даю согласие на обработку персональных данных', 'I consent to the processing of personal data')}</a></span></label>
         <label class="check"><input type="checkbox" name="consent_policy"> <span><a class="doc-link" href="#/legal/terms" data-doc="terms,privacy" data-for="consent_policy">${t('login.c2', 'Принимаю пользовательское соглашение и политику конфиденциальности', 'I accept the terms of use and the privacy policy')}</a></span></label>
@@ -2244,7 +2352,7 @@ route('/login', async (view) => {
       b.onkeydown = (e) => { if (e.key === 'Backspace' && !b.value && boxes[i - 1]) boxes[i - 1].focus(); };
       b.onpaste = (e) => { const v = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6); if (v.length) { e.preventDefault(); v.split('').forEach((c, k) => { if (boxes[k]) boxes[k].value = c; }); boxes[Math.min(5, v.length - 1)].focus(); if (v.length === 6 && !info.isNew) $('#f2', view).requestSubmit(); } };
     });
-    boxes[0].focus();
+    if (keep) { keep.split('').forEach((c, k) => { if (boxes[k]) boxes[k].value = c; }); const nm = $('#f2 [name=name]', view); (nm || boxes[5]).focus(); } else boxes[0].focus();
     $('#bk', view).onclick = step1;
     $('#re', view).onclick = (e) => busy(e.currentTarget, async () => { try { info = await POST('/auth/request', { target }); toast(tr('Код отправлен', 'Code sent')); step2(); } catch (er) { toastErr(er); } });
     $('#f2', view).onsubmit = (e) => {
@@ -2259,7 +2367,11 @@ route('/login', async (view) => {
           if (r.user.lang !== state.lang && !info.isNew) await setLang(r.user.lang, false);
           toast(info.isNew ? tr('Добро пожаловать!', 'Welcome!') : tr('Вы вошли', 'Signed in'));
           go(next);
-        } catch (er) { toastErr(er); }
+        } catch (er) {
+          // сервер не раскрывает заранее, есть ли аккаунт: о том, что адрес новый, узнаём после верного кода
+          if (er.code === 'name_required' && !info.isNew) { info.isNew = true; step2(code); toast(t('login.new', 'Вы здесь впервые — заполните профиль', 'You are new here — complete your profile')); return; }
+          toastErr(er);
+        }
       });
     };
   };

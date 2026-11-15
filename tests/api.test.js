@@ -1481,7 +1481,10 @@ describe('Защита от злоупотреблений', () => {
   });
   it('push-подписка хранит только адрес и ключи', async () => {
     assert.equal((await max.post('/api/push/subscribe', { subscription: { endpoint: 'https://push.example.com/abc' } })).status, 400);
-    assert.equal((await max.post('/api/push/subscribe', { subscription: { endpoint: 'https://push.example.com/abc', keys: { p256dh: 'k', auth: 'a' }, junk: 'x'.repeat(1000) } })).status, 200);
+    assert.equal((await max.post('/api/push/subscribe', { subscription: { endpoint: 'https://push.test/abc', keys: { p256dh: 'k', auth: 'a' }, junk: 'x'.repeat(1000) } })).status, 200);
+    // SSRF: только адреса известных push-сервисов, без localhost, внутренних сетей и своих портов
+    for (const endpoint of ['https://push.example.com/abc', 'https://127.0.0.1:47999/internal', 'https://169.254.169.254/latest/meta-data/', 'https://fcm.googleapis.com:8443/x'])
+      assert.equal((await max.post('/api/push/subscribe', { subscription: { endpoint, keys: { p256dh: 'k', auth: 'a' } } })).status, 400, endpoint);
   });
   it('push: устройства, что присылать, доставка по событию, отписавшееся устройство удаляется, выключение на устройстве', async () => {
     const sub = (endpoint) => ({ subscription: { endpoint, keys: { p256dh: 'k', auth: 'a' } } });

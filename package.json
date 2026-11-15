@@ -6,7 +6,7 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --no-warnings server/index.js",
-    "dev": "node --no-warnings --watch server/index.js",
+    "dev": "node --env-file-if-exists=.env --no-warnings --watch server/index.js",
     "backup": "node --no-warnings server/backup.js",
     "test": "node --test --test-concurrency=1 \"tests/*.test.js\"",
     "test:e2e": "node --test tests/e2e.test.js",

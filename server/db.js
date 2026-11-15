@@ -340,10 +340,48 @@ if (ver < 6) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
+if (ver < 7) {
+  // v7: индексы под частые фильтры (заявки пользователя, уведомления, сообщения чата, совпадения по находке и т. д.).
+  // Без них списки в кабинете и админке делали полный перебор таблиц и «вешали» сервер на больших базах.
+  db.exec('BEGIN');
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_app_user ON applications(user_id);
+    CREATE INDEX IF NOT EXISTS idx_app_family ON applications(family_id) WHERE family_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_app_created ON applications(created_at);
+    CREATE INDEX IF NOT EXISTS idx_app_geo ON applications(status, lat, lng);
+    CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read);
+    CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, read);
+    CREATE INDEX IF NOT EXISTS idx_chats_owner ON chats(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_chats_other ON chats(other_id);
+    CREATE INDEX IF NOT EXISTS idx_matches_found ON matches(found_id);
+    CREATE INDEX IF NOT EXISTS idx_tmsg_ticket ON ticket_messages(ticket_id);
+    CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
+    CREATE INDEX IF NOT EXISTS idx_points_user ON points_log(user_id);
+    CREATE INDEX IF NOT EXISTS idx_complaints_target ON complaints(target_type, target_id, status);
+    CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_push_user ON push_subs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id);
+    CREATE INDEX IF NOT EXISTS idx_ward_alerts_ward ON ward_alerts(ward_id);
+    CREATE INDEX IF NOT EXISTS idx_users_family ON users(family_id) WHERE family_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_valuables_user ON valuables(user_id);
+    CREATE INDEX IF NOT EXISTS idx_app_emergency ON applications(emergency_status);
+    PRAGMA user_version = 7;`);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  try { db.exec('ANALYZE'); } catch { /* статистика для планировщика — не обязательна */ }
+}
+
 // Хелперы для запросов
-function all(sql, ...p) { return db.prepare(sql).all(...p); }
-function get(sql, ...p) { return db.prepare(sql).get(...p); }
-function run(sql, ...p) { return db.prepare(sql).run(...p); }
+// подготовленные запросы переиспользуются (компиляция SQL на каждый вызов заметно дороже выполнения)
+const stmts = new Map();
+function st(sql) {
+  let s = stmts.get(sql);
+  if (!s) { s = db.prepare(sql); if (stmts.size < 500) stmts.set(sql, s); }
+  return s;
+}
+function all(sql, ...p) { return st(sql).all(...p); }
+function get(sql, ...p) { return st(sql).get(...p); }
+function run(sql, ...p) { return st(sql).run(...p); }
 function tx(fn) {
   db.exec('BEGIN');
   try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; }

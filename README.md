@@ -186,7 +186,7 @@ npm start          # http://localhost:3000
 ## Тесты
 
 ```bash
-npm test           # всё: API, рабочий режим и браузерные E2E (~2 мин)
+npm test           # всё: API, рабочий режим и браузерные E2E (~5 мин)
 npm run test:api   # только API
 npm run test:prod  # рабочий режим: чистая база, вход по SMS, оплата ЮKassa
 npm run test:e2e   # интерфейс в Chromium: мобильная вёрстка 360 px, язык, вход, мастер, кабинет, чат, карта, админка, доступность (axe)

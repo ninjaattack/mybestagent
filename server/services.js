@@ -100,8 +100,18 @@ function pushTag(type, link) {
 }
 // В тестах адреса https://push.test/… не уходят в интернет: …/gone… отвечает 410 (устройство отписалось), остальные — «доставлено»
 const TEST_PUSH = process.env.NODE_ENV === 'test';
+// Адрес подписки — только у известных push-сервисов браузеров (https, без порта). Иначе сервер сам отправлял бы
+// запросы куда угодно, в том числе на localhost и во внутреннюю сеть (SSRF).
+const PUSH_HOSTS = ['fcm.googleapis.com', 'android.googleapis.com', 'updates.push.services.mozilla.com', 'push.services.mozilla.com',
+  'push.apple.com', 'notify.windows.com'].concat(TEST_PUSH ? ['push.test'] : []);
+function pushHostOk(endpoint) {
+  let u; try { u = new URL(String(endpoint)); } catch (e) { return false; }
+  if (u.protocol !== 'https:' || u.port !== '' || u.username || u.password) return false;
+  return PUSH_HOSTS.some((s) => u.hostname === s || u.hostname.endsWith('.' + s));
+}
 const pushSend = (sub, body, opts) => {
   if (TEST_PUSH && sub.endpoint.startsWith('https://push.test/')) return sub.endpoint.includes('/gone') ? Promise.reject(Object.assign(new Error('gone'), { statusCode: 410 })) : Promise.resolve({ statusCode: 201 });
+  if (!pushHostOk(sub.endpoint)) return Promise.reject(Object.assign(new Error('push host not allowed'), { statusCode: 410 }));
   return webpush.sendNotification(sub, body, opts);
 };
 // Возвращает { sent, failed, removed }. payload: title, body, url, type, tag
@@ -126,7 +136,7 @@ async function sendPush(userId, payload) {
     } catch (e) {
       // 404/410 — устройство отписалось, адрес больше не нужен. Но только что выданный адрес push-сервис (FCM) иногда
       // ещё не знает несколько секунд — такой не удаляем, а считаем неудачной попыткой
-      const fresh = !TEST_PUSH && s.created_at && Date.now() - Date.parse(s.created_at.replace(' ', 'T') + 'Z') < 120e3;
+      const fresh = !TEST_PUSH && s.created_at && Date.now() - Date.parse(s.created_at.replace(' ', 'T') + 'Z') < 120e3 && pushHostOk(s.endpoint);
       if ((e.statusCode === 404 || e.statusCode === 410) && !fresh) { run('DELETE FROM push_subs WHERE id = ?', s.id); out.removed++; }
       else { out.failed++; if (!TEST_PUSH) console.error('Push не доставлен:', e.statusCode || '', String(e.body || e.message || e).slice(0, 160)); }
     }
@@ -167,6 +177,12 @@ function topReason(reasons) {
   return { id: ID[r.v] || 'Совпал номер.', secret: 'Совпала скрытая примета.', same_photo: 'Совпадает фото.', breed: 'Совпала порода.', clothes: 'Совпала одежда.', brand: 'Совпал бренд.', color: 'Совпал цвет.' }[r.k];
 }
 function notifyMatch(mine, theirs, score, reasons) {
+  // чужая скрытая примета не раскрывается и в уведомлении: ни причиной, ни баллами
+  if (theirs.secret && reasons.some((r) => r.k === 'secret')) {
+    const r = matchInfo(mine, Object.assign({}, theirs, { secret: '' }));
+    if (r.score < M.WEAK) return;
+    score = r.score; reasons = r.reasons;
+  }
   const why = topReason(reasons);
   notify(mine.user_id, {
     type: 'match',
@@ -179,31 +195,64 @@ function notifyMatch(mine, theirs, score, reasons) {
 // Сверяет заявку со всеми опубликованными заявками другой стороны той же категории.
 // Новые пары записываются и уведомляются; у существующих обновляются оценка и причины (без повторных уведомлений).
 // notified: 0 — не уведомляли, 1 — уведомили как «возможное», 2 — как совпадение.
+// Кандидаты — сразу в SQL сужаются тем, что matchInfo всё равно отбросит: страна и дата (находка не раньше
+// пропажи больше чем на сутки). Нестандартные даты (не ГГГГ-ММ-ДД) отдаются на проверку в JS, как раньше.
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+function candidates(app) {
+  const other = app.kind === 'lost' ? 'found' : 'lost';
+  const where = ["status = 'published'", 'kind = ?', 'category = ?', 'user_id != ?'], p = [other, app.category, app.user_id];
+  const ctry = app.country && app.country !== 'RU' ? app.country : '';
+  if (ctry) { where.push('country = ?'); p.push(ctry); } else where.push("(country IS NULL OR country IN ('', 'RU'))");
+  if (ISO_DAY.test(app.event_date || '')) {
+    where.push(`(event_date IS NULL OR event_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' OR event_date ${app.kind === 'lost' ? ">= date(?, '-1 day')" : "<= date(?, '+1 day')"})`);
+    p.push(app.event_date);
+  }
+  return all(`SELECT * FROM applications WHERE ${where.join(' AND ')}`, ...p);
+}
+// Существующие пары этой заявки — одним запросом в Map (раньше — отдельный запрос на каждого кандидата)
+function pairsOf(app) {
+  const col = app.kind === 'lost' ? 'lost_id' : 'found_id', oth = app.kind === 'lost' ? 'found_id' : 'lost_id';
+  return new Map(all(`SELECT * FROM matches WHERE ${col} = ?`, app.id).map((m) => [m[oth], m]));
+}
+function matchOne(app, c, pairs, created) {
+  if (app.family_id && c.family_id === app.family_id) return; // заявки одной семьи между собой не сравниваем
+  const { score, reasons } = matchInfo(app, c);
+  const lost = app.kind === 'lost' ? app : c, found = app.kind === 'lost' ? c : app;
+  const ex = pairs.get(c.id);
+  if (score < M.WEAK) {
+    if (ex && ex.lost_vote !== 'yes' && ex.found_vote !== 'yes') run('DELETE FROM matches WHERE id = ?', ex.id);
+    return;
+  }
+  const level = score >= M.STRONG ? 2 : 1;
+  let id, was = 0;
+  if (ex) { id = ex.id; was = ex.notified; run("UPDATE matches SET score = ?, reasons = ?, updated_at = datetime('now') WHERE id = ?", score, JSON.stringify(reasons), id); } else {
+    // пару мог только что записать параллельный подбор с другой стороны — тогда обновляем её
+    run(`INSERT INTO matches (lost_id, found_id, score, reasons) VALUES (?,?,?,?)
+      ON CONFLICT(lost_id, found_id) DO UPDATE SET score = excluded.score, reasons = excluded.reasons, updated_at = datetime('now')`, lost.id, found.id, score, JSON.stringify(reasons));
+    id = get('SELECT id FROM matches WHERE lost_id = ? AND found_id = ?', lost.id, found.id).id;
+  }
+  if (ex && (ex.lost_vote === 'no' || ex.found_vote === 'no')) return; // пару уже отклонили — не беспокоим
+  if (level > was) {
+    run('UPDATE matches SET notified = ? WHERE id = ?', level, id);
+    if (level === 2) created.push({ lost, found, score });
+    for (const [mine, theirs] of [[lost, found], [found, lost]]) if (level === 2 || seesWeak(mine)) notifyMatch(mine, theirs, score, reasons);
+  }
+}
 function runMatching(app) {
   if (!app || app.status !== 'published') return [];
-  const other = app.kind === 'lost' ? 'found' : 'lost';
-  const cands = all("SELECT * FROM applications WHERE status = 'published' AND kind = ? AND category = ? AND user_id != ?", other, app.category, app.user_id);
-  const created = [];
-  for (const c of cands) {
-    if (app.family_id && c.family_id === app.family_id) continue; // заявки одной семьи между собой не сравниваем
-    const { score, reasons } = matchInfo(app, c);
-    const lost = app.kind === 'lost' ? app : c, found = app.kind === 'lost' ? c : app;
-    const ex = get('SELECT * FROM matches WHERE lost_id = ? AND found_id = ?', lost.id, found.id);
-    if (score < M.WEAK) {
-      if (ex && ex.lost_vote !== 'yes' && ex.found_vote !== 'yes') run('DELETE FROM matches WHERE id = ?', ex.id);
-      continue;
-    }
-    const level = score >= M.STRONG ? 2 : 1;
-    let id, was = 0;
-    if (ex) { id = ex.id; was = ex.notified; run("UPDATE matches SET score = ?, reasons = ?, updated_at = datetime('now') WHERE id = ?", score, JSON.stringify(reasons), id); } else {
-      id = run('INSERT INTO matches (lost_id, found_id, score, reasons) VALUES (?,?,?,?)', lost.id, found.id, score, JSON.stringify(reasons)).lastInsertRowid;
-    }
-    if (ex && (ex.lost_vote === 'no' || ex.found_vote === 'no')) continue; // пару уже отклонили — не беспокоим
-    if (level > was) {
-      run('UPDATE matches SET notified = ? WHERE id = ?', level, id);
-      if (level === 2) created.push({ lost, found, score });
-      for (const [mine, theirs] of [[lost, found], [found, lost]]) if (level === 2 || seesWeak(mine)) notifyMatch(mine, theirs, score, reasons);
-    }
+  const pairs = pairsOf(app), created = [];
+  for (const c of candidates(app)) matchOne(app, c, pairs, created);
+  if (app.category === 'things') registryCheck(app);
+  return created;
+}
+// То же, но порциями: между порциями сервер успевает отвечать другим пользователям (создание заявки, пересчёт)
+const tick = () => new Promise((r) => setImmediate(r));
+async function runMatchingAsync(app) {
+  if (!app || app.status !== 'published') return [];
+  const cands = candidates(app), pairs = pairsOf(app), created = [];
+  for (let i = 0; i < cands.length; i++) {
+    if (i && i % 200 === 0) await tick();
+    matchOne(app, cands[i], pairs, created);
   }
   if (app.category === 'things') registryCheck(app);
   return created;
@@ -225,10 +274,18 @@ function registryCheck(app) {
   }
 }
 // Раз в 6 часов: допустимое расстояние растёт со временем, поэтому старые пропажи сверяются заново
-function rematchAll() {
-  for (const a of all("SELECT * FROM applications WHERE status = 'published' AND kind = 'lost' AND created_at > datetime('now','-120 days')")) {
-    try { runMatching(a); } catch (e) { console.error('Подбор совпадений:', e.message); }
-  }
+// Идёт порциями (runMatchingAsync), не занимая сервер целиком; повторный запуск, пока идёт прошлый, пропускается
+let rematching = false;
+async function rematchAll() {
+  if (rematching) return;
+  rematching = true;
+  try {
+    for (const { id } of all("SELECT id FROM applications WHERE status = 'published' AND kind = 'lost' AND created_at > datetime('now','-120 days')")) {
+      const a = get('SELECT * FROM applications WHERE id = ?', id); // заявку могли изменить или закрыть за время пересчёта
+      try { await runMatchingAsync(a); } catch (e) { console.error('Подбор совпадений:', e.message); }
+      await tick();
+    }
+  } finally { rematching = false; }
 }
 
 /* ---------- Экстренное оповещение по зонам ---------- */
@@ -269,6 +326,6 @@ function addPoints(userId, delta, reason) {
 }
 
 module.exports = {
-  vapidPublic: vapid.publicKey, addStream, dropStreams, emit, notify, sendEmail, sendSms, sendPush, pushPrefs, PUSH_KEYS, channels, MAIL,
-  distKm, matchScore, matchInfo, runMatching, rematchAll, hasPlus, broadcastEmergency, LEVELS, levelOf, addPoints, BASE_URL
+  vapidPublic: vapid.publicKey, addStream, dropStreams, emit, notify, sendEmail, sendSms, sendPush, pushPrefs, pushHostOk, PUSH_KEYS, channels, MAIL,
+  distKm, matchScore, matchInfo, runMatching, runMatchingAsync, rematchAll, hasPlus, broadcastEmergency, LEVELS, levelOf, addPoints, BASE_URL
 };
